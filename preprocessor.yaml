@@ -1,0 +1,165 @@
+name: DCGAN Image Preprocessor
+description: Preprocess images for DCGAN training - resize, normalize, and create train/test splits.
+inputs:
+  - {name: original_dataset, type: Dataset, description: "Original DataWrapper pickle with images"}
+  - {name: train_split_info, type: Data, description: "JSON with train/test split indices"}
+  - {name: image_size, type: Integer, optional: true, default: "64", description: "Target image size"}
+  - {name: normalize, type: Boolean, optional: true, default: "true", description: "Normalize images to [-1, 1]"}
+outputs:
+  - {name: train_images, type: Dataset, description: "Pickled train images tensor"}
+  - {name: test_images, type: Dataset, description: "Pickled test images tensor"}
+  - {name: preprocessing_info, type: Data, description: "JSON with preprocessing details"}
+implementation:
+  container:
+    image: gurpreetgandhi/nesy-factory:v32
+    command:
+      - python3
+      - -u
+      - -c
+    args:
+      - |
+        import argparse
+        import json
+        import os
+        import pickle
+        import torch
+        import numpy as np
+        from datetime import datetime
+        import io
+        from PIL import Image
+        from torchvision import transforms
+
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--original_dataset', type=str, required=True)
+        parser.add_argument('--train_split_info', type=str, required=True)
+        parser.add_argument('--image_size', type=int, default=64)
+        parser.add_argument('--normalize', type=str, default='true')
+        parser.add_argument('--train_images', type=str, required=True)
+        parser.add_argument('--test_images', type=str, required=True)
+        parser.add_argument('--preprocessing_info', type=str, required=True)
+        args = parser.parse_args()
+
+        normalize = args.normalize.lower() == 'true'
+        image_size = args.image_size
+
+        print("Starting DCGAN Image Preprocessing")
+        print(f"Image size: {image_size}x{image_size}")
+        print(f"Normalize: {normalize}")
+
+        # Load original dataset
+        with open(args.original_dataset, 'rb') as f:
+            data_wrapper = pickle.load(f)
+
+        # Load split info
+        with open(args.train_split_info, 'r') as f:
+            split_info = json.load(f)
+
+        train_indices = split_info.get('train_indices', [])
+        test_indices = split_info.get('test_indices', [])
+
+        print(f"Original images: {len(data_wrapper.images)}")
+        print(f"Train indices: {len(train_indices)}")
+        print(f"Test indices: {len(test_indices)}")
+
+        # Define preprocessing transforms
+        if normalize:
+            transform = transforms.Compose([
+                transforms.Resize((image_size, image_size)),
+                transforms.ToTensor(),
+                transforms.Normalize((0.5,), (0.5,))  # [-1, 1] range
+            ])
+        else:
+            transform = transforms.Compose([
+                transforms.Resize((image_size, image_size)),
+                transforms.ToTensor(),  # [0, 1] range
+            ])
+
+        def process_images(indices, name):
+            images = []
+            failed = 0
+            
+            print(f"Processing {name} images...")
+            for idx in indices:
+                try:
+                    img_info = data_wrapper.images[idx]
+                    if 'image_data' in img_info:
+                        img_bytes = img_info['image_data']
+                        pil_img = Image.open(io.BytesIO(img_bytes))
+                        
+                        # Convert to RGB if needed
+                        if pil_img.mode != 'RGB':
+                            pil_img = pil_img.convert('RGB')
+                        
+                        img_tensor = transform(pil_img)
+                        images.append(img_tensor)
+                        
+                        if len(images) % 100 == 0:
+                            print(f"  Processed {len(images)} {name} images...")
+                            
+                except Exception as e:
+                    failed += 1
+                    continue
+            
+            if images:
+                images_tensor = torch.stack(images)
+                print(f"  Successfully processed {len(images)} {name} images")
+                print(f"  Failed: {failed}")
+                print(f"  Tensor shape: {images_tensor.shape}")
+                return images_tensor
+            else:
+                print(f"  No {name} images could be processed")
+                return None
+
+        # Process train and test images
+        train_tensor = process_images(train_indices, "train")
+        test_tensor = process_images(test_indices, "test")
+
+        # Save processed images
+        output_dir = os.path.dirname(args.train_images)
+        if output_dir and not os.path.exists(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
+
+        with open(args.train_images, 'wb') as f:
+            pickle.dump(train_tensor, f)
+        print(f"Saved train images to: {args.train_images}")
+
+        with open(args.test_images, 'wb') as f:
+            pickle.dump(test_tensor, f)
+        print(f"Saved test images to: {args.test_images}")
+
+        # Create preprocessing info
+        preprocessing_info = {
+            'timestamp': datetime.now().isoformat(),
+            'image_size': image_size,
+            'normalized': normalize,
+            'train_samples': len(train_tensor) if train_tensor is not None else 0,
+            'test_samples': len(test_tensor) if test_tensor is not None else 0,
+            'tensor_shape': list(train_tensor.shape) if train_tensor is not None else None,
+            'data_range': '[-1, 1]' if normalize else '[0, 1]',
+            'original_dataset_info': {
+                'total_images': len(data_wrapper.images),
+                'classes': data_wrapper.class_names if hasattr(data_wrapper, 'class_names') else [],
+                'train_indices_count': len(train_indices),
+                'test_indices_count': len(test_indices)
+            }
+        }
+
+        with open(args.preprocessing_info, 'w') as f:
+            json.dump(preprocessing_info, f, indent=2)
+
+        print(f"Saved preprocessing info to: {args.preprocessing_info}")
+        print("Image preprocessing completed successfully!")
+      - --original_dataset
+      - {inputPath: original_dataset}
+      - --train_split_info
+      - {inputPath: train_split_info}
+      - --image_size
+      - {inputValue: image_size}
+      - --normalize
+      - {inputValue: normalize}
+      - --train_images
+      - {outputPath: train_images}
+      - --test_images
+      - {outputPath: test_images}
+      - --preprocessing_info
+      - {outputPath: preprocessing_info}
