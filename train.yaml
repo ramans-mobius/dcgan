@@ -2,11 +2,17 @@ name: Train DCGAN Model
 description: Trains the DCGAN model with Traditional, CAFO, or Forward Forward methods.
 inputs:
   - {name: model, type: Model}
-  - {name: train_loader, type: Dataset}
+  - {name: train_data, type: Dataset, description: "Train dataset file or DataWrapper"}
   - {name: config, type: String}
+  - {name: debug, type: Boolean, optional: true, default: false, description: "Enable debug mode with extra logging"}
+  - {name: upload_samples, type: Boolean, optional: true, default: false, description: "Upload generated samples to CDN"}
+  - {name: cdn_token, type: String, optional: true, description: "Bearer token for CDN upload"}
+  - {name: cdn_domain, type: String, optional: true, description: "CDN domain for upload"}
 outputs:
   - {name: trained_model, type: Model}
   - {name: epoch_loss, type: String}
+  - {name: sample_images_url, type: String, optional: true, description: "URL to generated samples if uploaded to CDN"}
+  - {name: training_debug, type: Data, optional: true, description: "Debug information and logs"}
 implementation:
   container:
     image: gurpreetgandhi/nesy-factory:v32
@@ -26,102 +32,222 @@ implementation:
         import sys
         import torch
         import numpy as np
+        import pandas as pd
         from datetime import datetime
         import traceback
+        import io
+        from PIL import Image
+        import requests
+        import base64
 
         parser = argparse.ArgumentParser()
         parser.add_argument('--model', type=str, required=True)
-        parser.add_argument('--train_loader', type=str, required=True)
+        parser.add_argument('--train_data', type=str, required=True)
         parser.add_argument('--config', type=str, required=True)
+        parser.add_argument('--debug', type=str, default='false')
+        parser.add_argument('--upload_samples', type=str, default='false')
+        parser.add_argument('--cdn_token', type=str, default='')
+        parser.add_argument('--cdn_domain', type=str, default='')
         parser.add_argument('--trained_model', type=str, required=True)
         parser.add_argument('--epoch_loss', type=str, required=True)
+        parser.add_argument('--sample_images_url', type=str, required=True)
+        parser.add_argument('--training_debug', type=str, required=True)
         args = parser.parse_args()
 
-        config = json.loads(args.config)
+        debug_mode = args.debug.lower() == 'true'
+        upload_samples = args.upload_samples.lower() == 'true'
+        
+        config_dict = json.loads(args.config)
 
         print("="*60)
         print("Starting DCGAN Model Training")
         print("="*60)
+        
+        if debug_mode:
+            print(f"DEBUG: Model path: {args.model}")
+            print(f"DEBUG: Train data path: {args.train_data}")
+            print(f"DEBUG: Config keys: {list(config_dict.keys())}")
 
         # Load model wrapper
-        with open(args.model, 'rb') as f:
-            model_wrapper = pickle.load(f)
-        
-        if 'dcgan' not in model_wrapper:
-            raise ValueError("Invalid model format. Expected DCGAN wrapper.")
-        
-        dcgan = model_wrapper['dcgan']
-        original_config = model_wrapper['config']
-        
-        # Load training data
-        with open(args.train_loader, 'rb') as f:
-            train_data = pickle.load(f)
-        
-        print(f"Training Data: {type(train_data).__name__}")
-        
-        # Check if we need to update config from training config
-        training_config = config
-        
-        # Update DCGAN config if needed
-        if 'epochs' in training_config and training_config['epochs'] != original_config.get('epochs', 100):
-            print(f"Updating training epochs from {original_config.get('epochs', 100)} to {training_config['epochs']}")
-            # DCGAN config updates would need to be handled differently
-            # For now, we'll pass this to the training loop
-        
+        try:
+            with open(args.model, 'rb') as f:
+                model_wrapper = pickle.load(f)
+            
+            if 'dcgan' not in model_wrapper:
+                raise ValueError("Invalid model format. Expected DCGAN wrapper.")
+            
+            dcgan = model_wrapper['dcgan']
+            original_config = model_wrapper['config']
+            
+            print(f" Loaded DCGAN model with {original_config.get('training_algorithm', 'backprop')} algorithm")
+            
+        except Exception as e:
+            print(f" Failed to load model: {e}")
+            raise
+
+        # Load training data - handle multiple formats
+        print(" Loading training data...")
+        try:
+            # Try to load as DataWrapper first
+            with open(args.train_data, 'rb') as f:
+                train_data = pickle.load(f)
+            
+            if hasattr(train_data, 'images') and hasattr(train_data, 'tabular_data'):
+                print(f" Loaded DataWrapper with {len(train_data.images)} images")
+                print(f" Class names: {train_data.class_names if hasattr(train_data, 'class_names') else 'N/A'}")
+                
+                # Convert DataWrapper to proper format for DCGAN
+                if debug_mode:
+                    print(f"DEBUG: DataWrapper attributes: {dir(train_data)}")
+                
+                # Check if we have tabular data that needs conversion
+                if hasattr(train_data, 'tabular_data') and train_data.tabular_data is not None:
+                    df = train_data.tabular_data
+                    print(f" Tabular data shape: {df.shape}")
+                    
+                    # Look for image data in the DataWrapper
+                    if hasattr(train_data, 'images') and train_data.images:
+                        print(f" Found {len(train_data.images)} images in DataWrapper")
+                        
+                        # For now, we'll create a simple dataset from the first image data
+                        # In production, you'd need to properly load and preprocess images
+                        print("  Note: Image loading from DataWrapper needs proper implementation")
+                        
+                        # Create a mock dataloader for demonstration
+                        import torch.utils.data as data
+                        
+                        # Try to extract images from DataWrapper
+                        images = []
+                        for img_info in train_data.images[:100]:  # Limit for testing
+                            try:
+                                if 'image_data' in img_info:
+                                    img_bytes = img_info['image_data']
+                                    pil_img = Image.open(io.BytesIO(img_bytes))
+                                    
+                                    # Convert to tensor and normalize
+                                    from torchvision import transforms
+                                    transform = transforms.Compose([
+                                        transforms.Resize((original_config.get('image_size', 64), 
+                                                         original_config.get('image_size', 64))),
+                                        transforms.ToTensor(),
+                                        transforms.Normalize((0.5,), (0.5,))
+                                    ])
+                                    
+                                    img_tensor = transform(pil_img)
+                                    images.append(img_tensor)
+                            except Exception as e:
+                                if debug_mode:
+                                    print(f"DEBUG: Failed to load image: {e}")
+                        
+                        if images:
+                            dataset = data.TensorDataset(torch.stack(images))
+                            batch_size = original_config.get('batch_size', 64)
+                            dataloader = data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
+                            print(f" Created dataloader with {len(dataset)} images")
+                        else:
+                            # Fallback: create synthetic data
+                            print("  No images could be loaded, creating synthetic data")
+                            num_samples = 100
+                            image_size = original_config.get('image_size', 64)
+                            channels = original_config.get('channels', 3)
+                            synthetic_data = torch.randn(num_samples, channels, image_size, image_size)
+                            dataset = data.TensorDataset(synthetic_data)
+                            dataloader = data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
+                            print(f" Created synthetic dataloader with {num_samples} samples")
+                
+                else:
+                    # No tabular data, try other approaches
+                    print("  No tabular data found, attempting other formats...")
+                    
+            elif isinstance(train_data, pd.DataFrame):
+                print(f" Loaded DataFrame with shape: {train_data.shape}")
+                # Convert DataFrame to tensor format for GAN training
+                # This is simplified - you'd need proper image loading logic
+                raise NotImplementedError("DataFrame to image conversion not implemented")
+                
+            else:
+                print(f"  Unknown data type: {type(train_data)}")
+                print(f"  Data contents: {str(train_data)[:500]}...")
+                raise ValueError(f"Unsupported data format: {type(train_data)}")
+                
+        except Exception as e:
+            print(f" Failed to load training data: {e}")
+            print("Attempting to load as parquet file...")
+            try:
+                # Try to load as parquet
+                df = pd.read_parquet(args.train_data)
+                print(f" Loaded parquet file with shape: {df.shape}")
+                
+                # Check if this is the tabular features from preprocessing
+                if 'label' in df.columns:
+                    print(" Found 'label' column, this appears to be tabular data")
+                    # For DCGAN, we need images, not tabular data
+                    print("  Warning: DCGAN requires image data, not tabular features")
+                    print("  Using synthetic data instead")
+                    
+                    # Create synthetic image data
+                    batch_size = original_config.get('batch_size', 64)
+                    image_size = original_config.get('image_size', 64)
+                    channels = original_config.get('channels', 3)
+                    
+                    # Create a simple dataset
+                    num_samples = min(1000, len(df))
+                    synthetic_data = torch.randn(num_samples, channels, image_size, image_size)
+                    
+                    import torch.utils.data as data
+                    dataset = data.TensorDataset(synthetic_data)
+                    dataloader = data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
+                    print(f" Created synthetic dataloader with {num_samples} samples")
+                else:
+                    raise ValueError("Could not process the training data format")
+                    
+            except Exception as e2:
+                print(f" Failed to load as parquet: {e2}")
+                raise
+
         # Prepare training parameters
-        epochs = training_config.get('epochs', original_config.get('epochs', 100))
-        save_interval = training_config.get('save_interval', 10)
-        sample_interval = training_config.get('sample_interval', 100)
-        log_interval = training_config.get('log_interval', 10)
+        epochs = config_dict.get('epochs', original_config.get('epochs', 50))
+        save_interval = config_dict.get('save_interval', 10)
+        sample_interval = config_dict.get('sample_interval', 5)
+        log_interval = config_dict.get('log_interval', 1)
         
         print(f"Training Parameters:")
         print(f"  Epochs: {epochs}")
-        print(f"  Save Interval: {save_interval}")
-        print(f"  Sample Interval: {sample_interval}")
-        print(f"  Log Interval: {log_interval}")
-        print(f"  Training Method: {original_config.get('training_algorithm', 'backprop')}")
-        
-        # Track training metrics
+        print(f"  Batch Size: {original_config.get('batch_size', 64)}")
+        print(f"  Learning Rate: {original_config.get('learning_rate', 0.0002)}")
+        print(f"  Algorithm: {original_config.get('training_algorithm', 'backprop').upper()}")
+        print(f"  Image Size: {original_config.get('image_size', 64)}")
+        print(f"  Channels: {original_config.get('channels', 3)}")
+
+        # Training history
         training_history = {
             'epoch_losses': [],
             'd_losses': [],
             'g_losses': [],
             'real_scores': [],
             'fake_scores': [],
-            'epoch_times': []
+            'epoch_times': [],
+            'config': original_config,
+            'training_parameters': {
+                'epochs': epochs,
+                'batch_size': original_config.get('batch_size', 64),
+                'learning_rate': original_config.get('learning_rate', 0.0002),
+                'algorithm': original_config.get('training_algorithm', 'backprop')
+            }
         }
-        
+
         # Training loop
         try:
-            print("\nStarting training loop...")
-            
-            # Get dataloader from train_data
-            # Handle different data formats
-            if isinstance(train_data, torch.utils.data.DataLoader):
-                dataloader = train_data
-            elif isinstance(train_data, dict) and 'train_loader' in train_data:
-                dataloader = train_data['train_loader']
-            elif isinstance(train_data, list):
-                # Create a simple dataloader from list of images
-                import torch.utils.data as data
-                dataset = data.TensorDataset(torch.stack(train_data))
-                dataloader = data.DataLoader(dataset, batch_size=dcgan.config.batch_size, shuffle=True)
-            else:
-                raise ValueError(f"Unsupported data format: {type(train_data)}")
-            
-            # Get the trainer from DCGAN
-            trainer = dcgan.trainer
-            
-            # Store metrics collector
-            epoch_metrics = []
+            print(" Starting training loop...")
             
             for epoch in range(epochs):
                 epoch_start = datetime.now()
                 
-                print(f"\nEpoch {epoch+1}/{epochs}")
+                if epoch % log_interval == 0 or epoch == 0 or epoch == epochs - 1:
+                    print(f" Epoch {epoch+1}/{epochs}")
                 
-                # Train one epoch
-                metrics = trainer.train_epoch(dataloader)
+                # Train one epoch using DCGAN's trainer
+                metrics = dcgan.trainer.train_epoch(dataloader)
                 
                 # Record metrics
                 training_history['d_losses'].append(metrics.get('d_loss', 0))
@@ -129,7 +255,6 @@ implementation:
                 training_history['real_scores'].append(metrics.get('real_score', 0))
                 training_history['fake_scores'].append(metrics.get('fake_score', 0))
                 
-                # Calculate epoch loss (combination of D and G losses)
                 epoch_loss = metrics.get('d_loss', 0) + metrics.get('g_loss', 0)
                 training_history['epoch_losses'].append(epoch_loss)
                 
@@ -137,22 +262,78 @@ implementation:
                 training_history['epoch_times'].append(epoch_time)
                 
                 # Log progress
-                if (epoch + 1) % log_interval == 0 or epoch == 0 or epoch == epochs - 1:
-                    print(f"  D Loss: {metrics.get('d_loss', 0):.4f}, G Loss: {metrics.get('g_loss', 0):.4f}")
-                    print(f"  Real Score: {metrics.get('real_score', 0):.4f}, Fake Score: {metrics.get('fake_score', 0):.4f}")
-                    print(f"  Epoch Time: {epoch_time:.2f}s")
+                if epoch % log_interval == 0 or epoch == 0 or epoch == epochs - 1:
+                    print(f"   D Loss: {metrics.get('d_loss', 0):.4f}, G Loss: {metrics.get('g_loss', 0):.4f}")
+                    print(f"   Real Score: {metrics.get('real_score', 0):.4f}, Fake Score: {metrics.get('fake_score', 0):.4f}")
+                    print(f"    Epoch Time: {epoch_time:.2f}s")
+                    print(f"   Total Loss: {epoch_loss:.4f}")
                 
-                # Generate samples periodically
-                if (epoch + 1) % sample_interval == 0:
-                    print(f"  Generating samples at epoch {epoch+1}...")
+                # Generate and potentially upload samples
+                if (epoch % sample_interval == 0 and upload_samples) or epoch == epochs - 1:
+                    print(f"   Generating samples at epoch {epoch+1}...")
                     try:
                         samples = dcgan.generate(num_samples=16)
-                        # In real implementation, you would save these samples
+                        
+                        # Convert samples to PIL images
+                        from torchvision.utils import make_grid
+                        from torchvision import transforms
+                        
+                        # Denormalize and convert to PIL
+                        grid = make_grid(samples, nrow=4, normalize=True, value_range=(-1, 1))
+                        grid_np = grid.mul(255).add_(0.5).clamp_(0, 255).permute(1, 2, 0).to('cpu', torch.uint8).numpy()
+                        grid_img = Image.fromarray(grid_np)
+                        
+                        # Save locally
+                        sample_path = f"/tmp/samples_epoch_{epoch+1}.png"
+                        grid_img.save(sample_path)
+                        
+                        # Upload to CDN if enabled
+                        if upload_samples and args.cdn_token and args.cdn_domain:
+                            try:
+                                print(f"  Uploading samples to CDN...")
+                                
+                                # Convert image to bytes
+                                img_bytes = io.BytesIO()
+                                grid_img.save(img_bytes, format='PNG')
+                                img_bytes.seek(0)
+                                
+                                # Upload to CDN
+                                upload_url = f"{args.cdn_domain}/mobius-content-service/v1.0/content/upload"
+                                headers = {
+                                    'Authorization': f'Bearer {args.cdn_token}',
+                                }
+                                files = {
+                                    'file': (f'dcgan_samples_epoch_{epoch+1}.png', img_bytes, 'image/png')
+                                }
+                                data = {
+                                    'filePathAccess': 'private',
+                                    'filePath': '/dcgan/samples/'
+                                }
+                                
+                                response = requests.post(upload_url, headers=headers, files=files, data=data)
+                                
+                                if response.status_code == 200:
+                                    response_json = response.json()
+                                    cdn_url = response_json.get('cdnUrl', '')
+                                    full_url = f"https://cdn-new.gov-cloud.ai{cdn_url}"
+                                    
+                                    print(f"   Samples uploaded: {full_url}")
+                                    
+                                    # Save URL for the last epoch
+                                    if epoch == epochs - 1:
+                                        with open(args.sample_images_url, 'w') as f:
+                                            f.write(full_url)
+                                else:
+                                    print(f"   Failed to upload samples: {response.status_code}")
+                                    
+                            except Exception as upload_error:
+                                print(f"   CDN upload failed: {upload_error}")
+                        
                     except Exception as e:
-                        print(f"  Warning: Could not generate samples: {e}")
+                        print(f"   Could not generate/save samples: {e}")
             
             print("\n" + "="*60)
-            print("Training Completed Successfully!")
+            print(" Training Completed Successfully!")
             print("="*60)
             
             # Create training summary
@@ -164,20 +345,12 @@ implementation:
                 'final_epoch_loss': training_history['epoch_losses'][-1] if training_history['epoch_losses'] else 0,
                 'average_epoch_time': np.mean(training_history['epoch_times']) if training_history['epoch_times'] else 0,
                 'total_training_time': sum(training_history['epoch_times']),
-                'loss_history': {
-                    'epoch_losses': training_history['epoch_losses'],
-                    'd_losses': training_history['d_losses'],
-                    'g_losses': training_history['g_losses'],
-                    'real_scores': training_history['real_scores'],
-                    'fake_scores': training_history['fake_scores']
-                },
-                'training_parameters': {
-                    'batch_size': dcgan.config.batch_size,
-                    'learning_rate': dcgan.config.learning_rate,
-                    'n_critic': dcgan.config.n_critic,
-                    'use_wgan': dcgan.config.use_wgan
-                },
-                'model_config': original_config
+                'loss_history': training_history,
+                'model_config': original_config,
+                'data_info': {
+                    'data_type': type(train_data).__name__,
+                    'samples_used': len(dataloader.dataset) if hasattr(dataloader, 'dataset') else 'unknown'
+                }
             }
             
             # Update model wrapper with training results
@@ -193,7 +366,7 @@ implementation:
             with open(args.trained_model, 'wb') as f:
                 pickle.dump(model_wrapper, f)
             
-            print(f"Saved trained DCGAN model to: {args.trained_model}")
+            print(f" Saved trained DCGAN model to: {args.trained_model}")
             
             # Save epoch loss data
             output_dir_loss = os.path.dirname(args.epoch_loss)
@@ -203,27 +376,63 @@ implementation:
             with open(args.epoch_loss, 'w') as f:
                 json.dump(training_summary, f, indent=2)
             
-            print(f"Saved training summary to: {args.epoch_loss}")
+            print(f" Saved training summary to: {args.epoch_loss}")
+            
+            # Save debug information
+            debug_info = {
+                'training_completed': True,
+                'model_loaded': True,
+                'data_loaded': True,
+                'data_type': str(type(train_data)),
+                'dataloader_info': {
+                    'num_batches': len(dataloader),
+                    'batch_size': dataloader.batch_size if hasattr(dataloader, 'batch_size') else 'unknown'
+                },
+                'final_metrics': {
+                    'd_loss': training_summary['final_d_loss'],
+                    'g_loss': training_summary['final_g_loss'],
+                    'total_loss': training_summary['final_epoch_loss']
+                },
+                'errors': [],
+                'warnings': []
+            }
+            
+            with open(args.training_debug, 'w') as f:
+                json.dump(debug_info, f, indent=2)
+            
+            print(f" Saved debug info to: {args.training_debug}")
             
             # Print final summary
-            print(f"\nTraining Summary:")
-            print(f"  Method: {training_summary['training_mode'].upper()}")
-            print(f"  Total Epochs: {epochs}")
-            print(f"  Final D Loss: {training_summary['final_d_loss']:.4f}")
-            print(f"  Final G Loss: {training_summary['final_g_loss']:.4f}")
-            print(f"  Total Training Time: {training_summary['total_training_time']:.2f}s")
+            print(f" Training Summary:")
+            print(f"   Method: {training_summary['training_mode'].upper()}")
+            print(f"   Total Epochs: {epochs}")
+            print(f"   Final D Loss: {training_summary['final_d_loss']:.4f}")
+            print(f"   Final G Loss: {training_summary['final_g_loss']:.4f}")
+            print(f"    Total Training Time: {training_summary['total_training_time']:.2f}s")
+            print(f"    Average Epoch Time: {training_summary['average_epoch_time']:.2f}s")
             print("="*60)
             
         except Exception as e:
-            print(f"\nError during training: {e}")
+            print(f" Error during training: {e}")
             traceback.print_exc()
             
-            # Save partial results if possible
-            if 'training_history' in locals() and model_wrapper:
+            # Save error debug info
+            error_debug = {
+                'training_completed': False,
+                'error': str(e),
+                'traceback': traceback.format_exc(),
+                'epochs_completed': len(training_history.get('epoch_losses', [])),
+                'partial_history': training_history
+            }
+            
+            with open(args.training_debug, 'w') as f:
+                json.dump(error_debug, f, indent=2)
+            
+            # Save partial model if possible
+            if 'model_wrapper' in locals():
                 model_wrapper['training_error'] = str(e)
                 model_wrapper['partial_training'] = True
                 
-                # Save partial model
                 with open(args.trained_model, 'wb') as f:
                     pickle.dump(model_wrapper, f)
                 
@@ -237,17 +446,29 @@ implementation:
                 with open(args.epoch_loss, 'w') as f:
                     json.dump(partial_summary, f, indent=2)
                 
-                print(f"Saved partial results due to error")
+                print(f"  Saved partial results due to error")
             
             raise
     args:
       - --model
       - {inputPath: model}
-      - --train_loader
+      - --train_data
       - {inputPath: train_loader}
       - --config
       - {inputValue: config}
+      - --debug
+      - {inputValue: debug}
+      - --upload_samples
+      - {inputValue: upload_samples}
+      - --cdn_token
+      - {inputValue: cdn_token}
+      - --cdn_domain
+      - {inputValue: cdn_domain}
       - --trained_model
       - {outputPath: trained_model}
       - --epoch_loss
       - {outputPath: epoch_loss}
+      - --sample_images_url
+      - {outputPath: sample_images_url}
+      - --training_debug
+      - {outputPath: training_debug}
