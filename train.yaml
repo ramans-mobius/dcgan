@@ -2,11 +2,12 @@ name: Train DCGAN Model
 description: Trains the DCGAN model with Traditional, CAFO, or Forward Forward methods.
 inputs:
   - {name: model, type: Model}
-  - {name: dataset_file, type: Dataset}
+  - {name: train_images, type: Dataset, description: "Preprocessed train images tensor"}
   - {name: config, type: String}
 outputs:
   - {name: trained_model, type: Model}
   - {name: epoch_loss, type: String}
+  - {name: generated_samples, type: Dataset, description: "Pickled generated samples for CDN upload"}
 implementation:
   container:
     image: gurpreetgandhi/nesy-factory:v32
@@ -23,25 +24,22 @@ implementation:
         import sys
         import torch
         import numpy as np
-        import pandas as pd
         from datetime import datetime
         import traceback
-        import io
-        from PIL import Image
 
         parser = argparse.ArgumentParser()
         parser.add_argument('--model', type=str, required=True)
-        parser.add_argument('--dataset_file', type=str, required=True)
+        parser.add_argument('--train_images', type=str, required=True)
         parser.add_argument('--config', type=str, required=True)
         parser.add_argument('--trained_model', type=str, required=True)
         parser.add_argument('--epoch_loss', type=str, required=True)
+        parser.add_argument('--generated_samples', type=str, required=True)
         args = parser.parse_args()
 
         config = json.loads(args.config)
 
         print("Starting DCGAN Model Training")
-        print(f"Dataset file: {args.dataset_file}")
-        print(f"Config: {config}")
+        print(f"Train images: {args.train_images}")
 
         # Load model wrapper
         try:
@@ -55,59 +53,38 @@ implementation:
             original_config = model_wrapper['config']
             
             print(f"Loaded DCGAN model")
-            print(f"Training algorithm: {original_config.get('training_algorithm', 'backprop')}")
+            print(f"Algorithm: {original_config.get('training_algorithm', 'backprop')}")
             
         except Exception as e:
             print(f"Failed to load model: {e}")
             raise
 
-        # Load dataset from parquet file
-        print("Loading dataset from parquet file...")
+        # Load preprocessed train images
+        print("Loading preprocessed train images...")
         try:
-            df = pd.read_parquet(args.dataset_file)
-            print(f"Loaded dataset with shape: {df.shape}")
-            print(f"Columns: {list(df.columns)}")
+            with open(args.train_images, 'rb') as f:
+                train_tensor = pickle.load(f)
             
-            # Check what type of data we have
-            if 'image_id' in df.columns and 'file_path' in df.columns:
-                print("This appears to be image metadata from DataWrapper")
-                print(f"Number of images: {len(df)}")
-                
-                # For DCGAN, we need to load actual images
-                # Since we don't have the actual images in the parquet file,
-                # we'll create synthetic data for training
-                print("Creating synthetic image data for training...")
-                
-            else:
-                print("Dataset doesn't contain expected image metadata columns")
-                print("Creating synthetic data for training...")
-                
+            if train_tensor is None:
+                raise ValueError("No train images loaded")
+            
+            print(f"Loaded train images tensor with shape: {train_tensor.shape}")
+            
+            # Create DataLoader
+            import torch.utils.data as data
+            batch_size = original_config.get('batch_size', 32)
+            dataset = data.TensorDataset(train_tensor)
+            dataloader = data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
+            
+            print(f"Created DataLoader: {len(dataset)} samples, batch size: {batch_size}")
+            
         except Exception as e:
-            print(f"Failed to load parquet file: {e}")
-            print("Creating synthetic data for training...")
-        
-        # Create synthetic dataset for training
-        image_size = original_config.get('image_size', 64)
-        channels = original_config.get('channels', 3)
-        batch_size = original_config.get('batch_size', 32)
-        num_samples = 1000  # Synthetic samples
-        
-        print(f"Creating synthetic dataset:")
-        print(f"  Image size: {image_size}x{image_size}")
-        print(f"  Channels: {channels}")
-        print(f"  Batch size: {batch_size}")
-        print(f"  Samples: {num_samples}")
-        
-        # Create synthetic images (random noise for demo)
-        synthetic_data = torch.randn(num_samples, channels, image_size, image_size)
-        
-        # Create DataLoader
-        import torch.utils.data as data
-        dataset = data.TensorDataset(synthetic_data)
-        dataloader = data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
-        
+            print(f"Failed to load train images: {e}")
+            raise
+
         # Prepare training parameters
         epochs = config.get('epochs', original_config.get('epochs', 50))
+        sample_interval = config.get('sample_interval', 5)
         
         print(f"Training Parameters:")
         print(f"  Epochs: {epochs}")
@@ -124,6 +101,9 @@ implementation:
             'fake_scores': [],
             'epoch_times': []
         }
+        
+        # Store generated samples from last epoch
+        final_generated_samples = None
         
         try:
             print("Starting training loop...")
@@ -152,8 +132,27 @@ implementation:
                 if epoch % 5 == 0 or epoch == 0 or epoch == epochs - 1:
                     print(f"  D Loss: {metrics.get('d_loss', 0):.4f}, G Loss: {metrics.get('g_loss', 0):.4f}")
                     print(f"  Real Score: {metrics.get('real_score', 0):.4f}, Fake Score: {metrics.get('fake_score', 0):.4f}")
+                
+                # Generate samples at intervals and save final samples
+                if (epoch % sample_interval == 0) or (epoch == epochs - 1):
+                    print(f"  Generating samples...")
+                    with torch.no_grad():
+                        dcgan.trainer.generator.eval()
+                        samples = dcgan.generate(num_samples=16)
+                        
+                        if epoch == epochs - 1:
+                            final_generated_samples = samples.cpu()
+                            print(f"  Saved final generated samples")
+                        
+                        dcgan.trainer.generator.train()
             
             print("Training Completed Successfully!")
+            
+            # Save final generated samples
+            if final_generated_samples is not None:
+                with open(args.generated_samples, 'wb') as f:
+                    pickle.dump(final_generated_samples, f)
+                print(f"Saved generated samples to: {args.generated_samples}")
             
             # Create training summary
             training_summary = {
@@ -173,9 +172,9 @@ implementation:
                 },
                 'model_config': original_config,
                 'data_used': {
-                    'type': 'synthetic',
-                    'samples': num_samples,
-                    'original_file': args.dataset_file
+                    'samples': len(dataset),
+                    'image_size': train_tensor.shape[2],
+                    'channels': train_tensor.shape[1]
                 }
             }
             
@@ -211,6 +210,7 @@ implementation:
             print(f"  Final D Loss: {training_summary['final_d_loss']:.4f}")
             print(f"  Final G Loss: {training_summary['final_g_loss']:.4f}")
             print(f"  Total Training Time: {training_summary['total_training_time']:.2f}s")
+            print(f"  Data Used: {training_summary['data_used']['samples']} images")
             
         except Exception as e:
             print(f"Error during training: {e}")
@@ -240,11 +240,13 @@ implementation:
             raise
       - --model
       - {inputPath: model}
-      - --dataset_file
-      - {inputPath: dataset_file}
+      - --train_images
+      - {inputPath: train_images}
       - --config
       - {inputValue: config}
       - --trained_model
       - {outputPath: trained_model}
       - --epoch_loss
       - {outputPath: epoch_loss}
+      - --generated_samples
+      - {outputPath: generated_samples}
