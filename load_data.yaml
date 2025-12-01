@@ -18,333 +18,331 @@ implementation:
       - python3
       - -u
       - -c
-      |
-      import os, sys, json, zipfile, io, requests, argparse, pandas as pd, numpy as np, pickle, base64, tempfile, warnings, traceback, hashlib, random, pathlib, datetime
-      from PIL import Image
-      from collections import Counter, defaultdict
-      from sklearn.model_selection import train_test_split
-      import warnings
-      warnings.filterwarnings('ignore')
-      
-      class DataWrapper:
-          def __init__(self):
-              self.images = []  # List of {'image_data': bytes, 'label': str, 'file_path': str, 'class_name': str}
-              self.class_names = []  # Original class names from folder names
-              self.class_to_idx = {}  # Mapping from class name to index
-              self.idx_to_class = {}  # Mapping from index to class name
-              self.metadata = {}
-              self.tabular_data = None  # Reference to tabular DataFrame
-          
-          def add_image(self, image_data, label, file_path, class_name):
-              self.images.append({
-                  'image_data': image_data,
-                  'label': label,
-                  'file_path': file_path,
-                  'class_name': class_name,
-                  'image_id': hashlib.md5(image_data).hexdigest()[:16]
-              })
-          
-          def build_mappings(self):
-              unique_classes = sorted(set([img['class_name'] for img in self.images]))
-              self.class_names = unique_classes
-              self.class_to_idx = {cls: idx for idx, cls in enumerate(unique_classes)}
-              self.idx_to_class = {idx: cls for idx, cls in enumerate(unique_classes)}
-              
-              # Add numeric labels to images
-              for img in self.images:
-                  img['label_idx'] = self.class_to_idx[img['class_name']]
-          
-          def get_class_distribution(self):
-              distribution = Counter([img['class_name'] for img in self.images])
-              return dict(distribution)
-          
-          def to_pickle(self):
-              return pickle.dumps(self)
-          
-          @classmethod
-          def from_pickle(cls, pickle_data):
-              return pickle.loads(pickle_data)
-      
-      def ensure_dir(path):
-          os.makedirs(os.path.dirname(path) if os.path.dirname(path) else '.', exist_ok=True)
-      
-      def download_and_extract(cdn_url, temp_dir):
-          print(f"[INFO] Downloading from: {cdn_url}")
-          
-          # Download
-          decoded_url = requests.utils.unquote(cdn_url)
-          response = requests.get(decoded_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=60)
-          response.raise_for_status()
-          
-          zip_path = os.path.join(temp_dir, 'dataset.zip')
-          with open(zip_path, 'wb') as f:
-              f.write(response.content)
-          
-          print(f"[INFO] Downloaded {len(response.content)} bytes")
-          
-          # Extract and analyze structure
-          data_wrapper = DataWrapper()
-          class_folders = set()
-          
-          with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-              # Get all files
-              all_files = zip_ref.namelist()
-              
-              # Analyze folder structure
-              for file_path in all_files:
-                  if not file_path.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp')):
-                      continue
-                  
-                  parts = pathlib.Path(file_path).parts
-                  
-                  # Expect structure: [folder]/class_folder/image_file.ext
-                  if len(parts) < 3:
-                      print(f"[WARN] Skipping file at unexpected depth: {file_path}")
-                      continue
-                  
-                  # Class name is the parent folder name
-                  class_name = parts[-2]
-                  
-                  # Skip hidden/system folders
-                  if class_name.startswith('.') or class_name.startswith('_'):
-                      continue
-                  
-                  # Extract image
-                  with zip_ref.open(file_path) as img_file:
-                      image_data = img_file.read()
-                      
-                      # Add to data wrapper
-                      data_wrapper.add_image(
-                          image_data=image_data,
-                          label=class_name,  # Original class name as label
-                          file_path=file_path,
-                          class_name=class_name
-                      )
-                      
-                      class_folders.add(class_name)
-          
-          data_wrapper.build_mappings()
-          
-          print(f"[INFO] Found {len(data_wrapper.images)} images")
-          print(f"[INFO] Class folders: {sorted(class_folders)}")
-          print(f"[INFO] Class distribution: {data_wrapper.get_class_distribution()}")
-          
-          return data_wrapper
-      
-      def extract_features_for_tabular(data_wrapper):
-          print("[INFO] Extracting features for tabular format...")
-          
-          records = []
-          
-          for idx, img in enumerate(data_wrapper.images):
-              if idx % 100 == 0:
-                  print(f"[INFO] Processing image {idx+1}/{len(data_wrapper.images)}...")
-              
-              try:
-                  with Image.open(io.BytesIO(img['image_data'])) as pil_img:
-                      # Basic features
-                      width, height = pil_img.size
-                      
-                      record = {
-                          'image_id': img['image_id'],
-                          'file_path': img['file_path'],
-                          'label': img['class_name'],  # Original class name preserved
-                          'label_idx': img['label_idx'],  # Numeric label
-                          'width': width,
-                          'height': height,
-                          'aspect_ratio': width / height if height > 0 else 0,
-                          'total_pixels': width * height,
-                      }
-                      
-                      # Color features if RGB
-                      if pil_img.mode in ('RGB', 'RGBA'):
-                          img_array = np.array(pil_img.convert('RGB'))
-                          
-                          # Basic color stats
-                          for i, channel in enumerate(['red', 'green', 'blue']):
-                              channel_data = img_array[:, :, i].flatten()
-                              record[f'{channel}_mean'] = float(np.mean(channel_data))
-                              record[f'{channel}_std'] = float(np.std(channel_data))
-                          
-                          record['brightness_mean'] = float(np.mean(img_array))
-                      
-                      records.append(record)
-                      
-              except Exception as e:
-                  print(f"[WARN] Could not extract features for image {img['file_path']}: {e}")
-                  continue
-          
-          df = pd.DataFrame(records)
-          print(f"[INFO] Created tabular DataFrame: {df.shape}")
-          
-          # Store reference in data wrapper
-          data_wrapper.tabular_data = df
-          
-          return df
-      
-      def create_split_indices(data_wrapper, train_split, shuffle_seed):
-       
-          print(f"[INFO] Creating stratified split with ratio: {train_split}")
-          
-          # Group by class
-          class_groups = defaultdict(list)
-          for idx, img in enumerate(data_wrapper.images):
-              class_groups[img['class_name']].append(idx)
-          
-          train_indices = []
-          test_indices = []
-          
-          # Set random seed
-          random.seed(shuffle_seed)
-          np.random.seed(shuffle_seed)
-          
-          # Stratified split per class
-          for class_name, indices in class_groups.items():
-              n_total = len(indices)
-              n_train = int(n_total * train_split)
-              
-              # Shuffle indices for this class
-              shuffled = indices.copy()
-              random.shuffle(shuffled)
-              
-              train_indices.extend(shuffled[:n_train])
-              test_indices.extend(shuffled[n_train:])
-          
-          # Final shuffle
-          random.shuffle(train_indices)
-          random.shuffle(test_indices)
-          
-          print(f"[INFO] Train samples: {len(train_indices)}")
-          print(f"[INFO] Test samples: {len(test_indices)}")
-          
-          return np.array(train_indices), np.array(test_indices)
-      
-      def main():
-          
-          parser = argparse.ArgumentParser()
-          parser.add_argument('--cdn_url', type=str, required=True)
-          parser.add_argument('--train_split', type=float, default=0.7)
-          parser.add_argument('--shuffle_seed', type=int, default=42)
-          parser.add_argument('--target_column', type=str, default='label')
-          parser.add_argument('--max_samples_per_class', type=int, default=0)
-          parser.add_argument('--dataset_file', type=str, required=True)
-          parser.add_argument('--original_dataset', type=str, required=True)
-          parser.add_argument('--dataset_info', type=str, required=True)
-          parser.add_argument('--train_split_info', type=str, required=True)
-          args = parser.parse_args()
-          
-          print("="*80)
-          print("LOAD UI COMPONENTS WITH ORIGINAL PRESERVATION")
-          print("="*80)
-          
-          with tempfile.TemporaryDirectory() as temp_dir:
-              try:
-                  # 1. Download and extract with original structure
-                  data_wrapper = download_and_extract(args.cdn_url, temp_dir)
-                  
-                  # 2. Apply max samples limit if specified
-                  if args.max_samples_per_class > 0:
-                      print(f"[INFO] Limiting to {args.max_samples_per_class} samples per class")
-                      # Group by class and limit
-                      class_groups = defaultdict(list)
-                      for img in data_wrapper.images:
-                          class_groups[img['class_name']].append(img)
-                      
-                      limited_images = []
-                      for class_name, images in class_groups.items():
-                          limited_images.extend(images[:args.max_samples_per_class])
-                      
-                      # Rebuild data wrapper with limited images
-                      new_wrapper = DataWrapper()
-                      for img in limited_images:
-                          new_wrapper.add_image(
-                              img['image_data'],
-                              img['label'],
-                              img['file_path'],
-                              img['class_name']
-                          )
-                      new_wrapper.build_mappings()
-                      data_wrapper = new_wrapper
-                  
-                  # 3. Extract features for tabular preprocessing
-                  df_tabular = extract_features_for_tabular(data_wrapper)
-                  
-                  # 4. Create split indices
-                  train_indices, test_indices = create_split_indices(
-                      data_wrapper, args.train_split, args.shuffle_seed
-                  )
-                  
-                  # 5. Save outputs
-                  ensure_dir(args.dataset_file)
-                  ensure_dir(args.original_dataset)
-                  ensure_dir(args.dataset_info)
-                  ensure_dir(args.train_split_info)
-                  
-                  # Save tabular data (for preprocessing brick)
-                  df_tabular.to_parquet(args.dataset_file, index=False)
-                  print(f"[INFO] Saved tabular data to: {args.dataset_file}")
-                  
-                  # Save original structure (for later bricks)
-                  with open(args.original_dataset, 'wb') as f:
-                      pickle.dump(data_wrapper, f)
-                  print(f"[INFO] Saved original structure to: {args.original_dataset}")
-                  
-                  # Save dataset info
-                  dataset_info = {
-                      'timestamp': datetime.datetime.utcnow().isoformat() + 'Z',
-                      'total_samples': len(data_wrapper.images),
-                      'total_classes': len(data_wrapper.class_names),
-                      'class_names': data_wrapper.class_names,  # PRESERVED
-                      'class_to_idx': data_wrapper.class_to_idx,  # PRESERVED
-                      'idx_to_class': data_wrapper.idx_to_class,  # PRESERVED
-                      'class_distribution': data_wrapper.get_class_distribution(),
-                      'tabular_features': list(df_tabular.columns),
-                      'train_split': args.train_split,
-                      'shuffle_seed': args.shuffle_seed,
-                      'target_column': args.target_column,
-                      'original_structure_preserved': True,
-                      'dataset_version': '1.0'
-                  }
-                  
-                  with open(args.dataset_info, 'w') as f:
-                      json.dump(dataset_info, f, indent=2)
-                  print(f"[INFO] Saved dataset info to: {args.dataset_info}")
-                  
-                  # Save split info
-                  split_info = {
-                      'train_indices': train_indices.tolist(),
-                      'test_indices': test_indices.tolist(),
-                      'train_size': len(train_indices),
-                      'test_size': len(test_indices),
-                      'train_ratio': len(train_indices) / len(data_wrapper.images),
-                      'test_ratio': len(test_indices) / len(data_wrapper.images),
-                      'class_names': data_wrapper.class_names  # PRESERVED
-                  }
-                  
-                  with open(args.train_split_info, 'w') as f:
-                      json.dump(split_info, f, indent=2)
-                  print(f"[INFO] Saved split info to: {args.train_split_info}")
-                  
-                  # Final summary
-                  print("\n" + "="*80)
-                  print("LOAD PROCESS COMPLETE")
-                  print("="*80)
-                  print(f"Total images: {len(data_wrapper.images)}")
-                  print(f"Classes preserved: {data_wrapper.class_names}")
-                  print(f"Tabular features: {len(df_tabular.columns)} columns")
-                  print(f"Train samples: {len(train_indices)}")
-                  print(f"Test samples: {len(test_indices)}")
-                  print("\nOriginal structure preserved for later bricks!")
-                  print("="*80)
-                  
-              except Exception as e:
-                  print(f"[ERROR] Failed: {e}")
-                  traceback.print_exc()
-                  sys.exit(1)
-      
-      if __name__ == "__main__":
-          main()
     args:
+      - |
+        import os, sys, json, zipfile, io, requests, argparse, pandas as pd, numpy as np, pickle, base64, tempfile, warnings, traceback, hashlib, random, pathlib, datetime
+        from PIL import Image
+        from collections import Counter, defaultdict
+        from sklearn.model_selection import train_test_split
+        import warnings
+        warnings.filterwarnings('ignore')
+        
+        class DataWrapper:
+            def __init__(self):
+                self.images = []  # List of {'image_data': bytes, 'label': str, 'file_path': str, 'class_name': str}
+                self.class_names = []  # Original class names from folder names
+                self.class_to_idx = {}  # Mapping from class name to index
+                self.idx_to_class = {}  # Mapping from index to class name
+                self.metadata = {}
+                self.tabular_data = None  # Reference to tabular DataFrame
+            
+            def add_image(self, image_data, label, file_path, class_name):
+                self.images.append({
+                    'image_data': image_data,
+                    'label': label,
+                    'file_path': file_path,
+                    'class_name': class_name,
+                    'image_id': hashlib.md5(image_data).hexdigest()[:16]
+                })
+            
+            def build_mappings(self):
+                unique_classes = sorted(set([img['class_name'] for img in self.images]))
+                self.class_names = unique_classes
+                self.class_to_idx = {cls: idx for idx, cls in enumerate(unique_classes)}
+                self.idx_to_class = {idx: cls for idx, cls in enumerate(unique_classes)}
+                
+                # Add numeric labels to images
+                for img in self.images:
+                    img['label_idx'] = self.class_to_idx[img['class_name']]
+            
+            def get_class_distribution(self):
+                distribution = Counter([img['class_name'] for img in self.images])
+                return dict(distribution)
+            
+            def to_pickle(self):
+                return pickle.dumps(self)
+            
+            @classmethod
+            def from_pickle(cls, pickle_data):
+                return pickle.loads(pickle_data)
+        
+        def ensure_dir(path):
+            os.makedirs(os.path.dirname(path) if os.path.dirname(path) else '.', exist_ok=True)
+        
+        def download_and_extract(cdn_url, temp_dir):
+            print(f"[INFO] Downloading from: {cdn_url}")
+            
+            # Download
+            decoded_url = requests.utils.unquote(cdn_url)
+            response = requests.get(decoded_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=60)
+            response.raise_for_status()
+            
+            zip_path = os.path.join(temp_dir, 'dataset.zip')
+            with open(zip_path, 'wb') as f:
+                f.write(response.content)
+            
+            print(f"[INFO] Downloaded {len(response.content)} bytes")
+            
+            # Extract and analyze structure
+            data_wrapper = DataWrapper()
+            class_folders = set()
+            
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                # Get all files
+                all_files = zip_ref.namelist()
+                
+                # Analyze folder structure
+                for file_path in all_files:
+                    if not file_path.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp')):
+                        continue
+                    
+                    parts = pathlib.Path(file_path).parts
+                    
+                    # Expect structure: [folder]/class_folder/image_file.ext
+                    if len(parts) < 3:
+                        print(f"[WARN] Skipping file at unexpected depth: {file_path}")
+                        continue
+                    
+                    # Class name is the parent folder name
+                    class_name = parts[-2]
+                    
+                    # Skip hidden/system folders
+                    if class_name.startswith('.') or class_name.startswith('_'):
+                        continue
+                    
+                    # Extract image
+                    with zip_ref.open(file_path) as img_file:
+                        image_data = img_file.read()
+                        
+                        # Add to data wrapper
+                        data_wrapper.add_image(
+                            image_data=image_data,
+                            label=class_name,  # Original class name as label
+                            file_path=file_path,
+                            class_name=class_name
+                        )
+                        
+                        class_folders.add(class_name)
+            
+            data_wrapper.build_mappings()
+            
+            print(f"[INFO] Found {len(data_wrapper.images)} images")
+            print(f"[INFO] Class folders: {sorted(class_folders)}")
+            print(f"[INFO] Class distribution: {data_wrapper.get_class_distribution()}")
+            
+            return data_wrapper
+        
+        def extract_features_for_tabular(data_wrapper):
+            print("[INFO] Extracting features for tabular format...")
+            
+            records = []
+            
+            for idx, img in enumerate(data_wrapper.images):
+                if idx % 100 == 0:
+                    print(f"[INFO] Processing image {idx+1}/{len(data_wrapper.images)}...")
+                
+                try:
+                    with Image.open(io.BytesIO(img['image_data'])) as pil_img:
+                        # Basic features
+                        width, height = pil_img.size
+                        
+                        record = {
+                            'image_id': img['image_id'],
+                            'file_path': img['file_path'],
+                            'label': img['class_name'],  # Original class name preserved
+                            'label_idx': img['label_idx'],  # Numeric label
+                            'width': width,
+                            'height': height,
+                            'aspect_ratio': width / height if height > 0 else 0,
+                            'total_pixels': width * height,
+                        }
+                        
+                        # Color features if RGB
+                        if pil_img.mode in ('RGB', 'RGBA'):
+                            img_array = np.array(pil_img.convert('RGB'))
+                            
+                            # Basic color stats
+                            for i, channel in enumerate(['red', 'green', 'blue']):
+                                channel_data = img_array[:, :, i].flatten()
+                                record[f'{channel}_mean'] = float(np.mean(channel_data))
+                                record[f'{channel}_std'] = float(np.std(channel_data))
+                            
+                            record['brightness_mean'] = float(np.mean(img_array))
+                        
+                        records.append(record)
+                        
+                except Exception as e:
+                    print(f"[WARN] Could not extract features for image {img['file_path']}: {e}")
+                    continue
+            
+            df = pd.DataFrame(records)
+            print(f"[INFO] Created tabular DataFrame: {df.shape}")
+            
+            # Store reference in data wrapper
+            data_wrapper.tabular_data = df
+            
+            return df
+        
+        def create_split_indices(data_wrapper, train_split, shuffle_seed):
+            print(f"[INFO] Creating stratified split with ratio: {train_split}")
+            
+            # Group by class
+            class_groups = defaultdict(list)
+            for idx, img in enumerate(data_wrapper.images):
+                class_groups[img['class_name']].append(idx)
+            
+            train_indices = []
+            test_indices = []
+            
+            # Set random seed
+            random.seed(shuffle_seed)
+            np.random.seed(shuffle_seed)
+            
+            # Stratified split per class
+            for class_name, indices in class_groups.items():
+                n_total = len(indices)
+                n_train = int(n_total * train_split)
+                
+                # Shuffle indices for this class
+                shuffled = indices.copy()
+                random.shuffle(shuffled)
+                
+                train_indices.extend(shuffled[:n_train])
+                test_indices.extend(shuffled[n_train:])
+            
+            # Final shuffle
+            random.shuffle(train_indices)
+            random.shuffle(test_indices)
+            
+            print(f"[INFO] Train samples: {len(train_indices)}")
+            print(f"[INFO] Test samples: {len(test_indices)}")
+            
+            return np.array(train_indices), np.array(test_indices)
+        
+        def main():
+            parser = argparse.ArgumentParser()
+            parser.add_argument('--cdn_url', type=str, required=True)
+            parser.add_argument('--train_split', type=float, default=0.7)
+            parser.add_argument('--shuffle_seed', type=int, default=42)
+            parser.add_argument('--target_column', type=str, default='label')
+            parser.add_argument('--max_samples_per_class', type=int, default=0)
+            parser.add_argument('--dataset_file', type=str, required=True)
+            parser.add_argument('--original_dataset', type=str, required=True)
+            parser.add_argument('--dataset_info', type=str, required=True)
+            parser.add_argument('--train_split_info', type=str, required=True)
+            args = parser.parse_args()
+            
+            print("="*80)
+            print("LOAD UI COMPONENTS WITH ORIGINAL PRESERVATION")
+            print("="*80)
+            
+            with tempfile.TemporaryDirectory() as temp_dir:
+                try:
+                    # 1. Download and extract with original structure
+                    data_wrapper = download_and_extract(args.cdn_url, temp_dir)
+                    
+                    # 2. Apply max samples limit if specified
+                    if args.max_samples_per_class > 0:
+                        print(f"[INFO] Limiting to {args.max_samples_per_class} samples per class")
+                        # Group by class and limit
+                        class_groups = defaultdict(list)
+                        for img in data_wrapper.images:
+                            class_groups[img['class_name']].append(img)
+                        
+                        limited_images = []
+                        for class_name, images in class_groups.items():
+                            limited_images.extend(images[:args.max_samples_per_class])
+                        
+                        # Rebuild data wrapper with limited images
+                        new_wrapper = DataWrapper()
+                        for img in limited_images:
+                            new_wrapper.add_image(
+                                img['image_data'],
+                                img['label'],
+                                img['file_path'],
+                                img['class_name']
+                            )
+                        new_wrapper.build_mappings()
+                        data_wrapper = new_wrapper
+                    
+                    # 3. Extract features for tabular preprocessing
+                    df_tabular = extract_features_for_tabular(data_wrapper)
+                    
+                    # 4. Create split indices
+                    train_indices, test_indices = create_split_indices(
+                        data_wrapper, args.train_split, args.shuffle_seed
+                    )
+                    
+                    # 5. Save outputs
+                    ensure_dir(args.dataset_file)
+                    ensure_dir(args.original_dataset)
+                    ensure_dir(args.dataset_info)
+                    ensure_dir(args.train_split_info)
+                    
+                    # Save tabular data (for preprocessing brick)
+                    df_tabular.to_parquet(args.dataset_file, index=False)
+                    print(f"[INFO] Saved tabular data to: {args.dataset_file}")
+                    
+                    # Save original structure (for later bricks)
+                    with open(args.original_dataset, 'wb') as f:
+                        pickle.dump(data_wrapper, f)
+                    print(f"[INFO] Saved original structure to: {args.original_dataset}")
+                    
+                    # Save dataset info
+                    dataset_info = {
+                        'timestamp': datetime.datetime.utcnow().isoformat() + 'Z',
+                        'total_samples': len(data_wrapper.images),
+                        'total_classes': len(data_wrapper.class_names),
+                        'class_names': data_wrapper.class_names,  # PRESERVED
+                        'class_to_idx': data_wrapper.class_to_idx,  # PRESERVED
+                        'idx_to_class': data_wrapper.idx_to_class,  # PRESERVED
+                        'class_distribution': data_wrapper.get_class_distribution(),
+                        'tabular_features': list(df_tabular.columns),
+                        'train_split': args.train_split,
+                        'shuffle_seed': args.shuffle_seed,
+                        'target_column': args.target_column,
+                        'original_structure_preserved': True,
+                        'dataset_version': '1.0'
+                    }
+                    
+                    with open(args.dataset_info, 'w') as f:
+                        json.dump(dataset_info, f, indent=2)
+                    print(f"[INFO] Saved dataset info to: {args.dataset_info}")
+                    
+                    # Save split info
+                    split_info = {
+                        'train_indices': train_indices.tolist(),
+                        'test_indices': test_indices.tolist(),
+                        'train_size': len(train_indices),
+                        'test_size': len(test_indices),
+                        'train_ratio': len(train_indices) / len(data_wrapper.images),
+                        'test_ratio': len(test_indices) / len(data_wrapper.images),
+                        'class_names': data_wrapper.class_names  # PRESERVED
+                    }
+                    
+                    with open(args.train_split_info, 'w') as f:
+                        json.dump(split_info, f, indent=2)
+                    print(f"[INFO] Saved split info to: {args.train_split_info}")
+                    
+                    # Final summary
+                    print("="*80)
+                    print("LOAD PROCESS COMPLETE")
+                    print("="*80)
+                    print(f"Total images: {len(data_wrapper.images)}")
+                    print(f"Classes preserved: {data_wrapper.class_names}")
+                    print(f"Tabular features: {len(df_tabular.columns)} columns")
+                    print(f"Train samples: {len(train_indices)}")
+                    print(f"Test samples: {len(test_indices)}")
+                    print("Original structure preserved for later bricks!")
+                    print("="*80)
+                    
+                except Exception as e:
+                    print(f"[ERROR] Failed: {e}")
+                    traceback.print_exc()
+                    sys.exit(1)
+        
+        if __name__ == "__main__":
+            main()
       - --cdn_url
       - {inputValue: cdn_url}
       - --train_split
