@@ -1,0 +1,253 @@
+name: Train DCGAN Model
+description: Trains the DCGAN model with Traditional, CAFO, or Forward Forward methods.
+inputs:
+  - {name: model, type: Model}
+  - {name: train_loader, type: Dataset}
+  - {name: config, type: String}
+outputs:
+  - {name: trained_model, type: Model}
+  - {name: epoch_loss, type: String}
+implementation:
+  container:
+    image: gurpreetgandhi/nesy-factory:v28
+    command:
+      - sh
+      - -c
+      - |
+        exec "$0" "$@"
+      - python3
+      - -u
+      - -c
+      - |
+        import argparse
+        import json
+        import os
+        import pickle
+        import sys
+        import torch
+        import numpy as np
+        from datetime import datetime
+        import traceback
+
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--model', type=str, required=True)
+        parser.add_argument('--train_loader', type=str, required=True)
+        parser.add_argument('--config', type=str, required=True)
+        parser.add_argument('--trained_model', type=str, required=True)
+        parser.add_argument('--epoch_loss', type=str, required=True)
+        args = parser.parse_args()
+
+        config = json.loads(args.config)
+
+        print("="*60)
+        print("Starting DCGAN Model Training")
+        print("="*60)
+
+        # Load model wrapper
+        with open(args.model, 'rb') as f:
+            model_wrapper = pickle.load(f)
+        
+        if 'dcgan' not in model_wrapper:
+            raise ValueError("Invalid model format. Expected DCGAN wrapper.")
+        
+        dcgan = model_wrapper['dcgan']
+        original_config = model_wrapper['config']
+        
+        # Load training data
+        with open(args.train_loader, 'rb') as f:
+            train_data = pickle.load(f)
+        
+        print(f"Training Data: {type(train_data).__name__}")
+        
+        # Check if we need to update config from training config
+        training_config = config
+        
+        # Update DCGAN config if needed
+        if 'epochs' in training_config and training_config['epochs'] != original_config.get('epochs', 100):
+            print(f"Updating training epochs from {original_config.get('epochs', 100)} to {training_config['epochs']}")
+            # DCGAN config updates would need to be handled differently
+            # For now, we'll pass this to the training loop
+        
+        # Prepare training parameters
+        epochs = training_config.get('epochs', original_config.get('epochs', 100))
+        save_interval = training_config.get('save_interval', 10)
+        sample_interval = training_config.get('sample_interval', 100)
+        log_interval = training_config.get('log_interval', 10)
+        
+        print(f"Training Parameters:")
+        print(f"  Epochs: {epochs}")
+        print(f"  Save Interval: {save_interval}")
+        print(f"  Sample Interval: {sample_interval}")
+        print(f"  Log Interval: {log_interval}")
+        print(f"  Training Method: {original_config.get('training_algorithm', 'backprop')}")
+        
+        # Track training metrics
+        training_history = {
+            'epoch_losses': [],
+            'd_losses': [],
+            'g_losses': [],
+            'real_scores': [],
+            'fake_scores': [],
+            'epoch_times': []
+        }
+        
+        # Training loop
+        try:
+            print("\nStarting training loop...")
+            
+            # Get dataloader from train_data
+            # Handle different data formats
+            if isinstance(train_data, torch.utils.data.DataLoader):
+                dataloader = train_data
+            elif isinstance(train_data, dict) and 'train_loader' in train_data:
+                dataloader = train_data['train_loader']
+            elif isinstance(train_data, list):
+                # Create a simple dataloader from list of images
+                import torch.utils.data as data
+                dataset = data.TensorDataset(torch.stack(train_data))
+                dataloader = data.DataLoader(dataset, batch_size=dcgan.config.batch_size, shuffle=True)
+            else:
+                raise ValueError(f"Unsupported data format: {type(train_data)}")
+            
+            # Get the trainer from DCGAN
+            trainer = dcgan.trainer
+            
+            # Store metrics collector
+            epoch_metrics = []
+            
+            for epoch in range(epochs):
+                epoch_start = datetime.now()
+                
+                print(f"\nEpoch {epoch+1}/{epochs}")
+                
+                # Train one epoch
+                metrics = trainer.train_epoch(dataloader)
+                
+                # Record metrics
+                training_history['d_losses'].append(metrics.get('d_loss', 0))
+                training_history['g_losses'].append(metrics.get('g_loss', 0))
+                training_history['real_scores'].append(metrics.get('real_score', 0))
+                training_history['fake_scores'].append(metrics.get('fake_score', 0))
+                
+                # Calculate epoch loss (combination of D and G losses)
+                epoch_loss = metrics.get('d_loss', 0) + metrics.get('g_loss', 0)
+                training_history['epoch_losses'].append(epoch_loss)
+                
+                epoch_time = (datetime.now() - epoch_start).total_seconds()
+                training_history['epoch_times'].append(epoch_time)
+                
+                # Log progress
+                if (epoch + 1) % log_interval == 0 or epoch == 0 or epoch == epochs - 1:
+                    print(f"  D Loss: {metrics.get('d_loss', 0):.4f}, G Loss: {metrics.get('g_loss', 0):.4f}")
+                    print(f"  Real Score: {metrics.get('real_score', 0):.4f}, Fake Score: {metrics.get('fake_score', 0):.4f}")
+                    print(f"  Epoch Time: {epoch_time:.2f}s")
+                
+                # Generate samples periodically
+                if (epoch + 1) % sample_interval == 0:
+                    print(f"  Generating samples at epoch {epoch+1}...")
+                    try:
+                        samples = dcgan.generate(num_samples=16)
+                        # In real implementation, you would save these samples
+                    except Exception as e:
+                        print(f"  Warning: Could not generate samples: {e}")
+            
+            print("\n" + "="*60)
+            print("Training Completed Successfully!")
+            print("="*60)
+            
+            # Create training summary
+            training_summary = {
+                'training_mode': original_config.get('training_algorithm', 'backprop'),
+                'total_epochs': epochs,
+                'final_d_loss': training_history['d_losses'][-1] if training_history['d_losses'] else 0,
+                'final_g_loss': training_history['g_losses'][-1] if training_history['g_losses'] else 0,
+                'final_epoch_loss': training_history['epoch_losses'][-1] if training_history['epoch_losses'] else 0,
+                'average_epoch_time': np.mean(training_history['epoch_times']) if training_history['epoch_times'] else 0,
+                'total_training_time': sum(training_history['epoch_times']),
+                'loss_history': {
+                    'epoch_losses': training_history['epoch_losses'],
+                    'd_losses': training_history['d_losses'],
+                    'g_losses': training_history['g_losses'],
+                    'real_scores': training_history['real_scores'],
+                    'fake_scores': training_history['fake_scores']
+                },
+                'training_parameters': {
+                    'batch_size': dcgan.config.batch_size,
+                    'learning_rate': dcgan.config.learning_rate,
+                    'n_critic': dcgan.config.n_critic,
+                    'use_wgan': dcgan.config.use_wgan
+                },
+                'model_config': original_config
+            }
+            
+            # Update model wrapper with training results
+            model_wrapper['training_history'] = training_summary
+            model_wrapper['trained'] = True
+            model_wrapper['training_completed'] = datetime.now().isoformat()
+            
+            # Save trained model
+            output_dir = os.path.dirname(args.trained_model)
+            if output_dir and not os.path.exists(output_dir):
+                os.makedirs(output_dir, exist_ok=True)
+            
+            with open(args.trained_model, 'wb') as f:
+                pickle.dump(model_wrapper, f)
+            
+            print(f"Saved trained DCGAN model to: {args.trained_model}")
+            
+            # Save epoch loss data
+            output_dir_loss = os.path.dirname(args.epoch_loss)
+            if output_dir_loss and not os.path.exists(output_dir_loss):
+                os.makedirs(output_dir_loss, exist_ok=True)
+            
+            with open(args.epoch_loss, 'w') as f:
+                json.dump(training_summary, f, indent=2)
+            
+            print(f"Saved training summary to: {args.epoch_loss}")
+            
+            # Print final summary
+            print(f"\nTraining Summary:")
+            print(f"  Method: {training_summary['training_mode'].upper()}")
+            print(f"  Total Epochs: {epochs}")
+            print(f"  Final D Loss: {training_summary['final_d_loss']:.4f}")
+            print(f"  Final G Loss: {training_summary['final_g_loss']:.4f}")
+            print(f"  Total Training Time: {training_summary['total_training_time']:.2f}s")
+            print("="*60)
+            
+        except Exception as e:
+            print(f"\nError during training: {e}")
+            traceback.print_exc()
+            
+            # Save partial results if possible
+            if 'training_history' in locals() and model_wrapper:
+                model_wrapper['training_error'] = str(e)
+                model_wrapper['partial_training'] = True
+                
+                # Save partial model
+                with open(args.trained_model, 'wb') as f:
+                    pickle.dump(model_wrapper, f)
+                
+                # Save partial training summary
+                partial_summary = {
+                    'error': str(e),
+                    'epochs_completed': len(training_history.get('epoch_losses', [])),
+                    'partial_history': training_history
+                }
+                
+                with open(args.epoch_loss, 'w') as f:
+                    json.dump(partial_summary, f, indent=2)
+                
+                print(f"Saved partial results due to error")
+            
+            raise
+    args:
+      - --model
+      - {inputPath: model}
+      - --train_loader
+      - {inputPath: train_loader}
+      - --config
+      - {inputValue: config}
+      - --trained_model
+      - {outputPath: trained_model}
+      - --epoch_loss
+      - {outputPath: epoch_loss}
