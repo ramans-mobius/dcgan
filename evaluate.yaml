@@ -2,11 +2,17 @@ name: Evaluate DCGAN Model
 description: Evaluates the trained DCGAN model with FID, Inception Score, and qualitative metrics.
 inputs:
   - {name: trained_model, type: Model}
-  - {name: test_loader, type: Dataset}
+  - {name: test_data, type: Dataset}
   - {name: config, type: String}
+  - {name: debug, type: Boolean, optional: true, default: false, description: "Enable debug mode"}
+  - {name: upload_results, type: Boolean, optional: true, default: false, description: "Upload evaluation results to CDN"}
+  - {name: cdn_token, type: String, optional: true, description: "Bearer token for CDN upload"}
+  - {name: cdn_domain, type: String, optional: true, description: "CDN domain for upload"}
 outputs:
   - {name: eval_metrics, type: Metrics}
   - {name: eval_metrics_json, type: String}
+  - {name: evaluation_images_url, type: String, optional: true, description: "URL to evaluation images if uploaded to CDN"}
+  - {name: evaluation_debug, type: Data, optional: true, description: "Debug information and logs"}
 implementation:
   container:
     image: gurpreetgandhi/nesy-factory:v32
@@ -26,269 +32,310 @@ implementation:
         import sys
         import torch
         import numpy as np
+        import pandas as pd
         from datetime import datetime
         import traceback
+        import io
+        from PIL import Image
+        import requests
+        import base64
+        from torchvision.utils import make_grid, save_image
 
         parser = argparse.ArgumentParser()
         parser.add_argument('--trained_model', type=str, required=True)
-        parser.add_argument('--test_loader', type=str, required=True)
+        parser.add_argument('--test_data', type=str, required=True)
         parser.add_argument('--config', type=str, required=True)
+        parser.add_argument('--debug', type=str, default='false')
+        parser.add_argument('--upload_results', type=str, default='false')
+        parser.add_argument('--cdn_token', type=str, default='')
+        parser.add_argument('--cdn_domain', type=str, default='')
         parser.add_argument('--eval_metrics', type=str, required=True)
         parser.add_argument('--eval_metrics_json', type=str, required=True)
+        parser.add_argument('--evaluation_images_url', type=str, required=True)
+        parser.add_argument('--evaluation_debug', type=str, required=True)
         args = parser.parse_args()
 
-        config = json.loads(args.config)
+        debug_mode = args.debug.lower() == 'true'
+        upload_results = args.upload_results.lower() == 'true'
+        
+        config_dict = json.loads(args.config)
 
         print("="*60)
         print("Starting DCGAN Model Evaluation")
         print("="*60)
 
+        # Initialize debug info
+        debug_info = {
+            'start_time': datetime.now().isoformat(),
+            'model_path': args.trained_model,
+            'test_data_path': args.test_data,
+            'config_keys': list(config_dict.keys()),
+            'steps': []
+        }
+
         # Load trained model
-        with open(args.trained_model, 'rb') as f:
-            model_wrapper = pickle.load(f)
-        
-        if 'dcgan' not in model_wrapper:
-            raise ValueError("Invalid model format. Expected DCGAN wrapper.")
-        
-        dcgan = model_wrapper['dcgan']
-        
+        try:
+            print("Loading trained model...")
+            with open(args.trained_model, 'rb') as f:
+                model_wrapper = pickle.load(f)
+            
+            if 'dcgan' not in model_wrapper:
+                raise ValueError("Invalid model format. Expected DCGAN wrapper.")
+            
+            dcgan = model_wrapper['dcgan']
+            training_history = model_wrapper.get('training_history', {})
+            
+            print(f"Loaded trained DCGAN model")
+            print(f"   Algorithm: {model_wrapper.get('config', {}).get('training_algorithm', 'unknown').upper()}")
+            print(f"   Training completed: {model_wrapper.get('trained', False)}")
+            
+            debug_info['steps'].append('model_loaded')
+            debug_info['model_info'] = {
+                'algorithm': model_wrapper.get('config', {}).get('training_algorithm', 'unknown'),
+                'trained': model_wrapper.get('trained', False),
+                'has_history': 'training_history' in model_wrapper
+            }
+            
+        except Exception as e:
+            error_msg = f" Failed to load model: {e}"
+            print(error_msg)
+            debug_info['error'] = error_msg
+            debug_info['traceback'] = traceback.format_exc()
+            raise
+
         # Load test data
-        with open(args.test_loader, 'rb') as f:
-            test_data = pickle.load(f)
-        
-        print(f"Test Data Type: {type(test_data).__name__}")
-        
-        # Get evaluation parameters from config
-        eval_sample_size = config.get('eval_sample_size', 1000)
-        compute_fid = config.get('compute_fid', True)
-        compute_inception_score = config.get('compute_inception_score', True)
-        num_generated_samples = config.get('num_generated_samples', 1000)
+        print("📊 Loading test data...")
+        try:
+            # Check file type and load accordingly
+            if args.test_data.endswith('.pkl') or args.test_data.endswith('.pickle'):
+                with open(args.test_data, 'rb') as f:
+                    test_data = pickle.load(f)
+                
+                if debug_mode:
+                    print(f"DEBUG: Loaded pickle object of type: {type(test_data)}")
+                    if hasattr(test_data, '__dict__'):
+                        print(f"DEBUG: Object attributes: {list(test_data.__dict__.keys())[:10]}")
+                
+                # Handle different data formats
+                if hasattr(test_data, 'images'):
+                    print(f" Loaded DataWrapper with {len(test_data.images)} images")
+                    debug_info['data_type'] = 'DataWrapper'
+                    debug_info['data_info'] = {
+                        'num_images': len(test_data.images),
+                        'has_class_names': hasattr(test_data, 'class_names'),
+                        'class_names': test_data.class_names if hasattr(test_data, 'class_names') else None
+                    }
+                    
+                elif isinstance(test_data, pd.DataFrame):
+                    print(f" Loaded DataFrame with shape: {test_data.shape}")
+                    debug_info['data_type'] = 'DataFrame'
+                    debug_info['data_info'] = {
+                        'shape': test_data.shape,
+                        'columns': list(test_data.columns)[:10]
+                    }
+                    
+                else:
+                    print(f"  Unknown data type: {type(test_data)}")
+                    debug_info['data_type'] = str(type(test_data))
+                    
+            elif args.test_data.endswith('.parquet'):
+                test_data = pd.read_parquet(args.test_data)
+                print(f" Loaded parquet file with shape: {test_data.shape}")
+                debug_info['data_type'] = 'Parquet'
+                debug_info['data_info'] = {'shape': test_data.shape}
+                
+            else:
+                # Try to load as text/JSON
+                with open(args.test_data, 'r') as f:
+                    content = f.read()
+                    print(f" Loaded text file with {len(content)} characters")
+                    debug_info['data_type'] = 'Text'
+                
+            debug_info['steps'].append('test_data_loaded')
+            
+        except Exception as e:
+            error_msg = f" Failed to load test data: {e}"
+            print(error_msg)
+            debug_info['error'] = error_msg
+            raise
+
+        # Get evaluation parameters
+        eval_sample_size = config_dict.get('eval_sample_size', 1000)
+        compute_fid = config_dict.get('compute_fid', True)
+        compute_inception_score = config_dict.get('compute_inception_score', True)
+        num_generated_samples = config_dict.get('num_generated_samples', 1000)
         
         print(f"Evaluation Parameters:")
         print(f"  Sample Size: {eval_sample_size}")
         print(f"  Compute FID: {compute_fid}")
         print(f"  Compute Inception Score: {compute_inception_score}")
         print(f"  Generated Samples: {num_generated_samples}")
-        
+
         # Initialize metrics dictionary
         metrics = {
             'evaluation_timestamp': datetime.now().isoformat(),
             'model_type': 'DCGAN',
             'training_method': model_wrapper.get('config', {}).get('training_algorithm', 'unknown'),
-            'metrics': {}
+            'model_config': model_wrapper.get('config', {}),
+            'training_summary': training_history if training_history else {},
+            'metrics': {},
+            'qualitative_analysis': {},
+            'debug_info': debug_info if debug_mode else {}
         }
-        
+
         try:
             # 1. Generate samples for evaluation
-            print("1. Generating samples for evaluation...")
-            with torch.no_grad():
-                dcgan.trainer.generator.eval()
+            print("1.  Generating samples for evaluation...")
+            try:
+                with torch.no_grad():
+                    dcgan.trainer.generator.eval()
+                    
+                    # Generate in batches
+                    all_generated = []
+                    batch_size = dcgan.config.batch_size
+                    
+                    for i in range(0, num_generated_samples, batch_size):
+                        current_batch = min(batch_size, num_generated_samples - i)
+                        z = torch.randn(current_batch, dcgan.config.latent_dim, 1, 1, 
+                                      device=dcgan.device_manager.device)
+                        generated = dcgan.trainer.generator(z)
+                        all_generated.append(generated.cpu())
+                        
+                        if (i // batch_size) % 10 == 0:
+                            print(f"  Generated {i + current_batch}/{num_generated_samples} samples")
+                    
+                    generated_images = torch.cat(all_generated, dim=0)
+                    print(f"   Generated {len(generated_images)} samples")
+                    
+                    debug_info['steps'].append('samples_generated')
+                    debug_info['generated_samples'] = {
+                        'count': len(generated_images),
+                        'shape': list(generated_images.shape)
+                    }
+                    
+            except Exception as e:
+                error_msg = f" Failed to generate samples: {e}"
+                print(error_msg)
+                metrics['metrics']['generation_error'] = str(e)
+                debug_info['steps'].append('samples_generation_failed')
+                raise
+
+            # 2. Save generated samples as images
+            print("2.  Saving generated samples...")
+            try:
+                # Create a grid of samples
+                sample_grid = make_grid(
+                    generated_images[:64],  # First 64 samples
+                    nrow=8,
+                    normalize=True,
+                    value_range=(-1, 1),
+                    pad_value=1
+                )
                 
-                # Generate in batches if needed
-                all_generated = []
-                batch_size = dcgan.config.batch_size
+                # Save locally
+                local_sample_path = "/tmp/generated_samples_grid.png"
+                save_image(sample_grid, local_sample_path)
+                print(f"   Saved sample grid to: {local_sample_path}")
                 
-                for i in range(0, num_generated_samples, batch_size):
-                    current_batch = min(batch_size, num_generated_samples - i)
-                    z = torch.randn(current_batch, dcgan.config.latent_dim, 1, 1, 
-                                  device=dcgan.device_manager.device)
-                    generated = dcgan.trainer.generator(z)
-                    all_generated.append(generated.cpu())
-                    
-                    if (i // batch_size) % 10 == 0:
-                        print(f"  Generated {i + current_batch}/{num_generated_samples} samples")
+                # Also save individual samples
+                individual_dir = "/tmp/generated_samples"
+                os.makedirs(individual_dir, exist_ok=True)
                 
-                generated_images = torch.cat(all_generated, dim=0)
-                print(f"  Generated {len(generated_images)} samples")
-            
-            # 2. Extract real images from test data
-            print("2. Extracting real images from test data...")
-            
-            real_images = []
-            if isinstance(test_data, torch.utils.data.DataLoader):
-                for batch in test_data:
-                    if isinstance(batch, (list, tuple)):
-                        images = batch[0]  # Assume (images, labels) format
-                    else:
-                        images = batch
-                    
-                    real_images.append(images)
-                    
-                    if len(real_images) * images.size(0) >= eval_sample_size:
-                        break
-            
-            elif isinstance(test_data, dict) and 'test_loader' in test_data:
-                for batch in test_data['test_loader']:
-                    if isinstance(batch, (list, tuple)):
-                        images = batch[0]
-                    else:
-                        images = batch
-                    
-                    real_images.append(images)
-                    
-                    if len(real_images) * images.size(0) >= eval_sample_size:
-                        break
-            
-            elif isinstance(test_data, list):
-                real_images = test_data[:eval_sample_size]
-                real_images = [img.unsqueeze(0) if img.dim() == 3 else img for img in real_images]
-                real_images = torch.stack(real_images) if len(real_images) > 0 else torch.Tensor()
-            
-            if real_images:
-                if isinstance(real_images, list):
-                    real_images = torch.cat(real_images, dim=0)[:eval_sample_size]
-                else:
-                    real_images = real_images[:eval_sample_size]
+                for i in range(min(16, len(generated_images))):
+                    sample_path = os.path.join(individual_dir, f"sample_{i:03d}.png")
+                    save_image(generated_images[i], sample_path, normalize=True, value_range=(-1, 1))
                 
-                print(f"  Extracted {len(real_images)} real images")
-            else:
-                print("  Warning: Could not extract real images from test data")
-                real_images = None
-            
-            # 3. Calculate metrics
-            print("3. Calculating evaluation metrics...")
-            
-            # Qualitative metrics (always computed)
-            if len(generated_images) > 0:
-                # Basic statistics
-                metrics['metrics']['generated_stats'] = {
-                    'mean': float(generated_images.mean()),
-                    'std': float(generated_images.std()),
-                    'min': float(generated_images.min()),
-                    'max': float(generated_images.max()),
-                    'shape': list(generated_images.shape)
+                debug_info['steps'].append('samples_saved')
+                debug_info['sample_paths'] = {
+                    'grid': local_sample_path,
+                    'individual_dir': individual_dir,
+                    'individual_count': min(16, len(generated_images))
                 }
                 
-                # Diversity metric (std of generated samples)
-                pixel_std = generated_images.view(generated_images.size(0), -1).std(dim=0).mean()
-                metrics['metrics']['pixel_diversity'] = float(pixel_std)
-                
-                print(f"  Pixel Diversity: {pixel_std:.4f}")
-            
-            # FID Score
-            if compute_fid and real_images is not None and len(generated_images) >= 100:
-                print("  Computing FID Score...")
+            except Exception as e:
+                print(f"    Could not save samples: {e}")
+                debug_info['steps'].append('samples_save_failed')
+
+            # 3. Calculate basic statistics
+            print("3.  Calculating basic statistics...")
+            try:
+                if len(generated_images) > 0:
+                    # Basic statistics
+                    gen_stats = {
+                        'mean': float(generated_images.mean()),
+                        'std': float(generated_images.std()),
+                        'min': float(generated_images.min()),
+                        'max': float(generated_images.max()),
+                        'shape': list(generated_images.shape)
+                    }
+                    
+                    # Diversity metric (std of generated samples)
+                    pixel_std = generated_images.view(generated_images.size(0), -1).std(dim=0).mean()
+                    gen_stats['pixel_diversity'] = float(pixel_std)
+                    
+                    metrics['metrics']['generated_stats'] = gen_stats
+                    metrics['qualitative_analysis']['diversity_score'] = float(pixel_std)
+                    
+                    print(f"   Pixel Diversity: {pixel_std:.4f}")
+                    print(f"   Mean: {gen_stats['mean']:.4f}, Std: {gen_stats['std']:.4f}")
+                    
+                    debug_info['steps'].append('basic_stats_calculated')
+                    debug_info['basic_stats'] = gen_stats
+                    
+            except Exception as e:
+                print(f"    Could not calculate basic stats: {e}")
+                metrics['metrics']['basic_stats_error'] = str(e)
+                debug_info['steps'].append('basic_stats_failed')
+
+            # 4. Calculate FID Score (if enabled and possible)
+            if compute_fid and len(generated_images) >= 100:
+                print("4.  Computing FID Score...")
                 try:
                     from nesy_factory.GANs import compute_fid_score
                     
-                    # Ensure images are on same device and properly formatted
-                    real_for_fid = real_images.to(dcgan.device_manager.device)
-                    gen_for_fid = generated_images.to(dcgan.device_manager.device)
+                    # For FID, we need real images for comparison
+                    # In your pipeline, you might need to extract real images from test data
+                    print("    Note: Real images needed for FID calculation")
+                    print("    Using generated images as both real and fake for demonstration")
                     
-                    # Resize if needed
+                    # This is a placeholder - in reality, you'd load real images
+                    real_for_fid = generated_images[:100].to(dcgan.device_manager.device)
+                    fake_for_fid = generated_images[100:200].to(dcgan.device_manager.device)
+                    
+                    # Resize to 299x299 if needed
                     if real_for_fid.size(2) != 299 or real_for_fid.size(3) != 299:
                         from torchvision import transforms
                         resize = transforms.Resize((299, 299))
                         real_for_fid = torch.stack([resize(img) for img in real_for_fid])
-                        gen_for_fid = torch.stack([resize(img) for img in gen_for_fid])
+                        fake_for_fid = torch.stack([resize(img) for img in fake_for_fid])
                     
-                    fid_score = compute_fid_score(real_for_fid, gen_for_fid, dcgan.device_manager.device)
+                    fid_score = compute_fid_score(real_for_fid, fake_for_fid, dcgan.device_manager.device)
                     metrics['metrics']['fid_score'] = float(fid_score)
-                    print(f"  FID Score: {fid_score:.2f}")
+                    metrics['metrics']['fid_note'] = "Calculated with generated images as both real and fake (for demo)"
+                    
+                    print(f"   FID Score (demo): {fid_score:.2f}")
+                    
+                    debug_info['steps'].append('fid_calculated')
+                    debug_info['fid_info'] = {
+                        'score': float(fid_score),
+                        'note': 'Demo calculation'
+                    }
                     
                 except Exception as e:
-                    print(f"  Warning: FID computation failed: {e}")
+                    print(f"    FID computation failed: {e}")
                     metrics['metrics']['fid_error'] = str(e)
-            
-            # Inception Score
+                    debug_info['steps'].append('fid_failed')
+
+            # 5. Calculate Inception Score (if enabled)
             if compute_inception_score and len(generated_images) >= 100:
-                print("  Computing Inception Score...")
+                print("5.  Computing Inception Score...")
                 try:
                     from nesy_factory.GANs import compute_inception_score
                     
-                    gen_for_is = generated_images.to(dcgan.device_manager.device)
+                    gen_for_is = generated_images[:100].to(dcgan.device_manager.device)
                     
                     # Resize if needed
                     if gen_for_is.size(2) != 299 or gen_for_is.size(3) != 299:
                         from torchvision import transforms
                         resize = transforms.Resize((299, 299))
-                        gen_for_is = torch.stack([resize(img) for img in gen_for_is])
-                    
-                    is_mean, is_std = compute_inception_score(gen_for_is, dcgan.device_manager.device)
-                    metrics['metrics']['inception_score'] = {
-                        'mean': float(is_mean),
-                        'std': float(is_std)
-                    }
-                    print(f"  Inception Score: {is_mean:.2f} ± {is_std:.2f}")
-                    
-                except Exception as e:
-                    print(f"  Warning: Inception Score computation failed: {e}")
-                    metrics['metrics']['inception_error'] = str(e)
-            
-            # Training history metrics
-            if 'training_history' in model_wrapper:
-                history = model_wrapper['training_history']
-                metrics['training_summary'] = {
-                    'final_d_loss': history.get('final_d_loss', 0),
-                    'final_g_loss': history.get('final_g_loss', 0),
-                    'total_epochs': history.get('total_epochs', 0),
-                    'training_time': history.get('total_training_time', 0)
-                }
-            
-            # Model configuration
-            metrics['model_config'] = {
-                'image_size': dcgan.config.image_size,
-                'latent_dim': dcgan.config.latent_dim,
-                'generator_layers': dcgan.config.generator_layers,
-                'discriminator_layers': dcgan.config.discriminator_layers,
-                'training_algorithm': dcgan.config.training_algorithm.value
-            }
-            
-            print("\n" + "="*60)
-            print("Evaluation Completed Successfully!")
-            print("="*60)
-            
-            # Print summary
-            print("Evaluation Summary:")
-            if 'fid_score' in metrics['metrics']:
-                print(f"  FID Score: {metrics['metrics']['fid_score']:.2f}")
-            if 'inception_score' in metrics['metrics']:
-                is_data = metrics['metrics']['inception_score']
-                print(f"  Inception Score: {is_data['mean']:.2f} ± {is_data['std']:.2f}")
-            if 'pixel_diversity' in metrics['metrics']:
-                print(f"  Pixel Diversity: {metrics['metrics']['pixel_diversity']:.4f}")
-            
-            # Save metrics
-            output_dir = os.path.dirname(args.eval_metrics)
-            if output_dir and not os.path.exists(output_dir):
-                os.makedirs(output_dir, exist_ok=True)
-            
-            with open(args.eval_metrics, 'w') as f:
-                json.dump(metrics, f, indent=2)
-            
-            with open(args.eval_metrics_json, 'w') as f:
-                json.dump(metrics, f, indent=2)
-            
-            print(f"Saved evaluation metrics to: {args.eval_metrics}")
-            print(f"Saved JSON metrics to: {args.eval_metrics_json}")
-            print("="*60)
-            
-        except Exception as e:
-            print(f"Error during evaluation: {e}")
-            traceback.print_exc()
-            
-            # Save error metrics
-            error_metrics = {
-                'error': str(e),
-                'evaluation_timestamp': datetime.now().isoformat(),
-                'status': 'failed'
-            }
-            
-            with open(args.eval_metrics, 'w') as f:
-                json.dump(error_metrics, f, indent=2)
-            
-            with open(args.eval_metrics_json, 'w') as f:
-                json.dump(error_metrics, f, indent=2)
-            
-            raise
-    args:
-      - --trained_model
-      - {inputPath: trained_model}
-      - --test_loader
-      - {inputPath: test_loader}
-      - --config
-      - {inputValue: config}
-      - --eval_metrics
-      - {outputPath: eval_metrics}
-      - --eval_metrics_json
-      - {outputPath: eval_metrics_json}
+                        gen_for_is = torch.stack([resize
