@@ -1,0 +1,270 @@
+name: Convert Preprocessing To Upload Format
+description: "Convert preprocessing output (tabular data) to DataWrapper format compatible with UploadToCDN brick"
+inputs:
+  - {name: train_X, type: Dataset, description: "Processed features from preprocessing brick"}
+  - {name: train_y, type: Dataset, description: "Processed target from preprocessing brick"}
+  - {name: original_dataset, type: Dataset, description: "Original DataWrapper pickle with structure"}
+  - {name: preprocess_metadata, type: Data, description: "Metadata from preprocessing"}
+  - {name: dataset_info, type: Data, description: "Dataset info from load brick"}
+  - {name: train_split_info, type: Data, description: "Split info from load brick"}
+outputs:
+  - {name: processed_data_pickle, type: Dataset, description: "Pickled DataWrapper ready for UploadToCDN"}
+  - {name: config_string, type: String, description: "JSON config string for UploadToCDN"}
+  - {name: converter_metadata, type: Data, description: "Metadata about the conversion"}
+implementation:
+  container:
+    image: python:3.8-slim
+    command:
+      - python3
+      - -u
+      - -c
+      |
+      import os, sys, json, pickle, pandas as pd, numpy as np, argparse, warnings, traceback
+      from datetime import datetime
+      import warnings
+      warnings.filterwarnings('ignore')
+      
+      def ensure_dir(path):
+        
+          os.makedirs(os.path.dirname(path) if os.path.dirname(path) else '.', exist_ok=True)
+      
+      class ProcessedDataWrapper:
+       
+          def __init__(self):
+              self.processed_features = None  # X features DataFrame
+              self.processed_target = None    # y target DataFrame
+              self.original_structure = None  # Original DataWrapper reference
+              self.preprocess_metadata = None
+              self.dataset_info = None
+              self.train_split_info = None
+              self.conversion_timestamp = None
+              
+              # Preserved from original
+              self.class_names = []
+              self.class_to_idx = {}
+              self.idx_to_class = {}
+          
+          def load_and_merge(self, train_X_path, train_y_path, original_pickle_path,
+                           preprocess_meta_path, dataset_info_path, split_info_path):
+          
+              
+              print("[INFO] Loading processed features...")
+              self.processed_features = pd.read_parquet(train_X_path)
+              
+              print("[INFO] Loading processed target...")
+              self.processed_target = pd.read_parquet(train_y_path)
+              
+              print("[INFO] Loading original structure...")
+              with open(original_pickle_path, 'rb') as f:
+                  self.original_structure = pickle.load(f)
+              
+              print("[INFO] Loading metadata...")
+              with open(preprocess_meta_path, 'r') as f:
+                  self.preprocess_metadata = json.load(f)
+              
+              with open(dataset_info_path, 'r') as f:
+                  self.dataset_info = json.load(f)
+              
+              with open(split_info_path, 'r') as f:
+                  self.train_split_info = json.load(f)
+              
+              # Preserve class information
+              if hasattr(self.original_structure, 'class_names'):
+                  self.class_names = self.original_structure.class_names
+                  self.class_to_idx = self.original_structure.class_to_idx
+                  self.idx_to_class = self.original_structure.idx_to_class
+              elif 'class_names' in self.dataset_info:
+                  self.class_names = self.dataset_info['class_names']
+                  if 'class_to_idx' in self.dataset_info:
+                      self.class_to_idx = self.dataset_info['class_to_idx']
+                      self.idx_to_class = {v: k for k, v in self.class_to_idx.items()}
+              
+              self.conversion_timestamp = datetime.utcnow().isoformat() + 'Z'
+              
+              print(f"[INFO] Loaded {len(self.processed_features)} processed samples")
+              print(f"[INFO] Preserved {len(self.class_names)} class names: {self.class_names}")
+          
+          def validate(self):
+          
+              print("[INFO] Validating data consistency...")
+              
+              # Check sample count consistency
+              if len(self.processed_features) != len(self.processed_target):
+                  raise ValueError(f"Feature/target mismatch: {len(self.processed_features)} != {len(self.processed_target)}")
+              
+              # Check if we have original images
+              if self.original_structure and hasattr(self.original_structure, 'images'):
+                  orig_count = len(self.original_structure.images)
+                  proc_count = len(self.processed_features)
+                  
+                  # Processed data might be subset after preprocessing
+                  if proc_count > orig_count:
+                      print(f"[WARN] Processed samples ({proc_count}) > original ({orig_count})")
+              
+              # Check class preservation
+              if not self.class_names:
+                  print("[WARN] No class names preserved from original")
+              
+              print("[INFO] Validation passed")
+          
+          def create_config_string(self):
+          
+              config = {
+                  'conversion_timestamp': self.conversion_timestamp,
+                  'dataset_info': {
+                      'original_samples': len(self.original_structure.images) if self.original_structure else 0,
+                      'processed_samples': len(self.processed_features),
+                      'features_count': len(self.processed_features.columns),
+                      'class_names': self.class_names,
+                      'class_count': len(self.class_names)
+                  },
+                  'preprocessing': {
+                      'config': self.preprocess_metadata.get('config', {}),
+                      'selected_features': self.preprocess_metadata.get('selected_features', []),
+                      'target_column': self.preprocess_metadata.get('target_column', 'label')
+                  },
+                  'split_info': {
+                      'train_size': self.train_split_info.get('train_size', 0),
+                      'test_size': self.train_split_info.get('test_size', 0),
+                      'train_ratio': self.train_split_info.get('train_ratio', 0)
+                  },
+                  'data_schema': {
+                      'features_columns': list(self.processed_features.columns),
+                      'target_columns': list(self.processed_target.columns),
+                      'features_dtypes': {col: str(dtype) for col, dtype in self.processed_features.dtypes.items()},
+                      'target_dtypes': {col: str(dtype) for col, dtype in self.processed_target.dtypes.items()}
+                  },
+                  'compatibility': {
+                      'format': 'DataWrapper_v1.0',
+                      'upload_to_cdn_compatible': True,
+                      'requires_class_names': True,
+                      'preserves_original_structure': True
+                  }
+              }
+              
+              return json.dumps(config, indent=2)
+          
+          def to_pickle(self):
+            
+              return pickle.dumps(self)
+          
+          def save_metadata(self, output_path):
+             
+              metadata = {
+                  'conversion_timestamp': self.conversion_timestamp,
+                  'input_files': {
+                      'train_X': self.processed_features.shape,
+                      'train_y': self.processed_target.shape,
+                      'original_dataset': 'DataWrapper object',
+                      'preprocess_metadata': 'JSON',
+                      'dataset_info': 'JSON',
+                      'train_split_info': 'JSON'
+                  },
+                  'preserved_classes': self.class_names,
+                  'class_mappings': {
+                      'class_to_idx': self.class_to_idx,
+                      'idx_to_class': self.idx_to_class
+                  },
+                  'data_summary': {
+                      'total_processed_samples': len(self.processed_features),
+                      'total_features': len(self.processed_features.columns),
+                      'feature_names': list(self.processed_features.columns)[:20],  # First 20
+                      'target_name': list(self.processed_target.columns)[0] if len(self.processed_target.columns) > 0 else 'unknown'
+                  },
+                  'validation_status': 'passed',
+                  'output_format': 'DataWrapper_v1.0'
+              }
+              
+              with open(output_path, 'w') as f:
+                  json.dump(metadata, f, indent=2)
+      
+      def main():
+         
+          parser = argparse.ArgumentParser()
+          parser.add_argument('--train_X', type=str, required=True)
+          parser.add_argument('--train_y', type=str, required=True)
+          parser.add_argument('--original_dataset', type=str, required=True)
+          parser.add_argument('--preprocess_metadata', type=str, required=True)
+          parser.add_argument('--dataset_info', type=str, required=True)
+          parser.add_argument('--train_split_info', type=str, required=True)
+          parser.add_argument('--processed_data_pickle', type=str, required=True)
+          parser.add_argument('--config_string', type=str, required=True)
+          parser.add_argument('--converter_metadata', type=str, required=True)
+          args = parser.parse_args()
+          
+          print("="*80)
+          print("CONVERT PREPROCESSING TO UPLOAD FORMAT")
+          print("="*80)
+          
+          try:
+              # 1. Create wrapper and load data
+              wrapper = ProcessedDataWrapper()
+              wrapper.load_and_merge(
+                  args.train_X,
+                  args.train_y,
+                  args.original_dataset,
+                  args.preprocess_metadata,
+                  args.dataset_info,
+                  args.train_split_info
+              )
+              
+              # 2. Validate
+              wrapper.validate()
+              
+              # 3. Create outputs
+              ensure_dir(args.processed_data_pickle)
+              ensure_dir(args.config_string)
+              ensure_dir(args.converter_metadata)
+              
+              # Save pickle
+              with open(args.processed_data_pickle, 'wb') as f:
+                  pickle.dump(wrapper, f)
+              print(f"[INFO] Saved processed data pickle to: {args.processed_data_pickle}")
+              
+              # Create and save config string
+              config_str = wrapper.create_config_string()
+              with open(args.config_string, 'w') as f:
+                  f.write(config_str)
+              print(f"[INFO] Saved config string to: {args.config_string}")
+              
+              # Save metadata
+              wrapper.save_metadata(args.converter_metadata)
+              print(f"[INFO] Saved converter metadata to: {args.converter_metadata}")
+              
+              # Summary
+              print("\n" + "="*80)
+              print("CONVERSION COMPLETE")
+              print("="*80)
+              print(f"Processed samples: {len(wrapper.processed_features)}")
+              print(f"Features: {len(wrapper.processed_features.columns)}")
+              print(f"Preserved classes: {wrapper.class_names}")
+              print(f"Config string length: {len(config_str)} chars")
+              print("\nOutput is now compatible with UploadToCDN brick!")
+              print("="*80)
+              
+          except Exception as e:
+              print(f"[ERROR] Conversion failed: {e}")
+              traceback.print_exc()
+              sys.exit(1)
+      
+      if __name__ == "__main__":
+          main()
+    args:
+      - --train_X
+      - {inputPath: train_X}
+      - --train_y
+      - {inputPath: train_y}
+      - --original_dataset
+      - {inputPath: original_dataset}
+      - --preprocess_metadata
+      - {inputPath: preprocess_metadata}
+      - --dataset_info
+      - {inputPath: dataset_info}
+      - --train_split_info
+      - {inputPath: train_split_info}
+      - --processed_data_pickle
+      - {outputPath: processed_data_pickle}
+      - --config_string
+      - {outputPath: config_string}
+      - --converter_metadata
+      - {outputPath: converter_metadata}
