@@ -232,14 +232,14 @@ implementation:
               print(f"[INFO] Saved converter metadata to: {args.converter_metadata}")
               
               # Summary
-              print("\n" + "="*80)
+              print("="*80)
               print("CONVERSION COMPLETE")
               print("="*80)
               print(f"Processed samples: {len(wrapper.processed_features)}")
               print(f"Features: {len(wrapper.processed_features.columns)}")
               print(f"Preserved classes: {wrapper.class_names}")
               print(f"Config string length: {len(config_str)} chars")
-              print("\nOutput is now compatible with UploadToCDN brick!")
+              print("Output is now compatible with UploadToCDN brick!")
               print("="*80)
               
           except Exception as e:
