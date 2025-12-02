@@ -15,7 +15,6 @@ implementation:
       - python3
       - -u
       - -c
-    args:
       - |
         import argparse
         import json
@@ -25,8 +24,6 @@ implementation:
         import torch
         import numpy as np
         from datetime import datetime
-        import traceback
-        from torchvision.utils import make_grid, save_image
 
         parser = argparse.ArgumentParser()
         parser.add_argument('--trained_model', type=str, required=True)
@@ -41,7 +38,6 @@ implementation:
 
         print("Starting DCGAN Model Evaluation")
 
-        # Load trained model
         with open(args.trained_model, 'rb') as f:
             model_wrapper = pickle.load(f)
         
@@ -49,8 +45,7 @@ implementation:
             raise ValueError("Invalid model format. Expected DCGAN wrapper.")
         
         dcgan = model_wrapper['dcgan']
-        
-        # Load test images
+
         print("Loading test images...")
         with open(args.test_images, 'rb') as f:
             test_tensor = pickle.load(f)
@@ -60,7 +55,6 @@ implementation:
         
         print(f"Loaded test images tensor with shape: {test_tensor.shape}")
         
-        # Get evaluation parameters from config
         eval_sample_size = config.get('eval_sample_size', 1000)
         compute_fid = config.get('compute_fid', True)
         compute_inception_score = config.get('compute_inception_score', True)
@@ -72,185 +66,144 @@ implementation:
         print(f"  Compute Inception Score: {compute_inception_score}")
         print(f"  Generated Samples: {num_generated_samples}")
         
-        # Initialize metrics dictionary
         metrics = {
             'evaluation_timestamp': datetime.now().isoformat(),
             'model_type': 'DCGAN',
-            'training_method': model_wrapper.get('config', {}).get('training_algorithm', 'unknown'),
+            'training_method': model_wrapper.get('algorithm', 'unknown'),
             'metrics': {}
         }
         
-        # Store generated samples for later comparison
         evaluation_generated_samples = None
         
-        try:
-            # 1. Generate samples for evaluation
-            print("Generating samples for evaluation...")
-            with torch.no_grad():
-                dcgan.trainer.generator.eval()
+        print("Generating samples for evaluation...")
+        with torch.no_grad():
+            dcgan.trainer.generator.eval()
+            
+            all_generated = []
+            batch_size = config.get('batch_size', 32)
+            
+            for i in range(0, num_generated_samples, batch_size):
+                current_batch = min(batch_size, num_generated_samples - i)
+                z = torch.randn(current_batch, dcgan.config.latent_dim, 1, 1, device=dcgan.device_manager.device)
+                generated = dcgan.trainer.generator(z)
+                all_generated.append(generated.cpu())
                 
-                # Generate in batches
-                all_generated = []
-                batch_size = dcgan.config.batch_size
-                
-                for i in range(0, num_generated_samples, batch_size):
-                    current_batch = min(batch_size, num_generated_samples - i)
-                    z = torch.randn(current_batch, dcgan.config.latent_dim, 1, 1, 
-                                  device=dcgan.device_manager.device)
-                    generated = dcgan.trainer.generator(z)
-                    all_generated.append(generated.cpu())
-                    
-                    if (i // batch_size) % 10 == 0:
-                        print(f"  Generated {i + current_batch}/{num_generated_samples} samples")
-                
-                generated_images = torch.cat(all_generated, dim=0)
-                evaluation_generated_samples = generated_images
-                print(f"  Generated {len(generated_images)} samples")
+                if (i // batch_size) % 10 == 0:
+                    print(f"  Generated {i + current_batch}/{num_generated_samples} samples")
             
-            # Save generated samples
-            with open(args.evaluation_samples, 'wb') as f:
-                pickle.dump(evaluation_generated_samples, f)
-            print(f"Saved evaluation samples to: {args.evaluation_samples}")
-            
-            # 2. Prepare real test images for comparison
-            real_images = test_tensor[:min(eval_sample_size, len(test_tensor))]
-            print(f"Using {len(real_images)} real test images for comparison")
-            
-            # 3. Calculate basic statistics
-            print("Calculating basic statistics...")
-            if len(generated_images) > 0:
-                # Basic statistics
-                metrics['metrics']['generated_stats'] = {
-                    'mean': float(generated_images.mean()),
-                    'std': float(generated_images.std()),
-                    'min': float(generated_images.min()),
-                    'max': float(generated_images.max()),
-                    'shape': list(generated_images.shape)
-                }
-                
-                # Real images statistics
-                metrics['metrics']['real_stats'] = {
-                    'mean': float(real_images.mean()),
-                    'std': float(real_images.std()),
-                    'min': float(real_images.min()),
-                    'max': float(real_images.max()),
-                    'shape': list(real_images.shape)
-                }
-                
-                # Diversity metric
-                pixel_std = generated_images.view(generated_images.size(0), -1).std(dim=0).mean()
-                metrics['metrics']['pixel_diversity'] = float(pixel_std)
-                
-                print(f"  Pixel Diversity: {pixel_std:.4f}")
-                print(f"  Generated mean/std: {metrics['metrics']['generated_stats']['mean']:.4f}/{metrics['metrics']['generated_stats']['std']:.4f}")
-                print(f"  Real mean/std: {metrics['metrics']['real_stats']['mean']:.4f}/{metrics['metrics']['real_stats']['std']:.4f}")
-            
-            # 4. Calculate FID Score
-            if compute_fid and len(generated_images) >= 100 and len(real_images) >= 100:
-                print("Computing FID Score...")
-                try:
-                    from nesy_factory.GANs import compute_fid_score
-                    
-                    # Use real test images and generated images
-                    real_for_fid = real_images[:100].to(dcgan.device_manager.device)
-                    fake_for_fid = generated_images[:100].to(dcgan.device_manager.device)
-                    
-                    # Resize if needed
-                    if real_for_fid.size(2) != 299 or real_for_fid.size(3) != 299:
-                        from torchvision import transforms
-                        resize = transforms.Resize((299, 299))
-                        real_for_fid = torch.stack([resize(img) for img in real_for_fid])
-                        fake_for_fid = torch.stack([resize(img) for img in fake_for_fid])
-                    
-                    fid_score = compute_fid_score(real_for_fid, fake_for_fid, dcgan.device_manager.device)
-                    metrics['metrics']['fid_score'] = float(fid_score)
-                    metrics['metrics']['fid_note'] = f"Compared {len(real_for_fid)} real test images vs {len(fake_for_fid)} generated"
-                    
-                    print(f"  FID Score: {fid_score:.2f}")
-                    
-                except Exception as e:
-                    print(f"  FID computation failed: {e}")
-                    metrics['metrics']['fid_error'] = str(e)
-            
-            # 5. Calculate Inception Score
-            if compute_inception_score and len(generated_images) >= 100:
-                print("Computing Inception Score...")
-                try:
-                    from nesy_factory.GANs import compute_inception_score
-                    
-                    gen_for_is = generated_images[:100].to(dcgan.device_manager.device)
-                    
-                    # Resize if needed
-                    if gen_for_is.size(2) != 299 or gen_for_is.size(3) != 299:
-                        from torchvision import transforms
-                        resize = transforms.Resize((299, 299))
-                        gen_for_is = torch.stack([resize(img) for img in gen_for_is])
-                    
-                    is_mean, is_std = compute_inception_score(gen_for_is, dcgan.device_manager.device)
-                    metrics['metrics']['inception_score'] = {
-                        'mean': float(is_mean),
-                        'std': float(is_std)
-                    }
-                    print(f"  Inception Score: {is_mean:.2f} ± {is_std:.2f}")
-                    
-                except Exception as e:
-                    print(f"  Inception Score computation failed: {e}")
-                    metrics['metrics']['inception_error'] = str(e)
-            
-            # 6. Training history metrics
-            if 'training_history' in model_wrapper:
-                history = model_wrapper['training_history']
-                metrics['training_summary'] = {
-                    'final_d_loss': history.get('final_d_loss', 0),
-                    'final_g_loss': history.get('final_g_loss', 0),
-                    'total_epochs': history.get('total_epochs', 0),
-                    'training_time': history.get('total_training_time', 0)
-                }
-            
-            print("Evaluation Completed Successfully!")
-            
-            # Save metrics
-            output_dir = os.path.dirname(args.eval_metrics)
-            if output_dir and not os.path.exists(output_dir):
-                os.makedirs(output_dir, exist_ok=True)
-            
-            with open(args.eval_metrics, 'w') as f:
-                json.dump(metrics, f, indent=2)
-            
-            with open(args.eval_metrics_json, 'w') as f:
-                json.dump(metrics, f, indent=2)
-            
-            print(f"Saved evaluation metrics to: {args.eval_metrics}")
-            print(f"Saved JSON metrics to: {args.eval_metrics_json}")
-            
-            # Print summary
-            print("Evaluation Summary:")
-            if 'fid_score' in metrics['metrics']:
-                print(f"  FID Score: {metrics['metrics']['fid_score']:.2f}")
-            if 'inception_score' in metrics['metrics']:
-                is_data = metrics['metrics']['inception_score']
-                print(f"  Inception Score: {is_data['mean']:.2f} ± {is_data['std']:.2f}")
-            if 'pixel_diversity' in metrics['metrics']:
-                print(f"  Pixel Diversity: {metrics['metrics']['pixel_diversity']:.4f}")
-            
-        except Exception as e:
-            print(f"Error during evaluation: {e}")
-            traceback.print_exc()
-            
-            # Save error metrics
-            error_metrics = {
-                'error': str(e),
-                'evaluation_timestamp': datetime.now().isoformat(),
-                'status': 'failed'
+            generated_images = torch.cat(all_generated, dim=0)
+            evaluation_generated_samples = generated_images
+            print(f"  Generated {len(generated_images)} samples")
+        
+        with open(args.evaluation_samples, 'wb') as f:
+            pickle.dump(evaluation_generated_samples, f)
+        print(f"Saved evaluation samples to: {args.evaluation_samples}")
+        
+        real_images = test_tensor[:min(eval_sample_size, len(test_tensor))]
+        print(f"Using {len(real_images)} real test images for comparison")
+        
+        print("Calculating basic statistics...")
+        if len(generated_images) > 0:
+            metrics['metrics']['generated_stats'] = {
+                'mean': float(generated_images.mean()),
+                'std': float(generated_images.std()),
+                'min': float(generated_images.min()),
+                'max': float(generated_images.max()),
+                'shape': list(generated_images.shape)
             }
             
-            with open(args.eval_metrics, 'w') as f:
-                json.dump(error_metrics, f, indent=2)
+            metrics['metrics']['real_stats'] = {
+                'mean': float(real_images.mean()),
+                'std': float(real_images.std()),
+                'min': float(real_images.min()),
+                'max': float(real_images.max()),
+                'shape': list(real_images.shape)
+            }
             
-            with open(args.eval_metrics_json, 'w') as f:
-                json.dump(error_metrics, f, indent=2)
+            pixel_std = generated_images.view(generated_images.size(0), -1).std(dim=0).mean()
+            metrics['metrics']['pixel_diversity'] = float(pixel_std)
             
-            raise
+            print(f"  Pixel Diversity: {pixel_std:.4f}")
+            print(f"  Generated mean/std: {metrics['metrics']['generated_stats']['mean']:.4f}/{metrics['metrics']['generated_stats']['std']:.4f}")
+        
+        if compute_fid and len(generated_images) >= 100 and len(real_images) >= 100:
+            print("Computing FID Score...")
+            try:
+                from nesy_factory.GANs import compute_fid_score
+                
+                real_for_fid = real_images[:100].to(dcgan.device_manager.device)
+                fake_for_fid = generated_images[:100].to(dcgan.device_manager.device)
+                
+                if real_for_fid.size(2) != 299 or real_for_fid.size(3) != 299:
+                    from torchvision import transforms
+                    resize = transforms.Resize((299, 299))
+                    real_for_fid = torch.stack([resize(img) for img in real_for_fid])
+                    fake_for_fid = torch.stack([resize(img) for img in fake_for_fid])
+                
+                fid_score = compute_fid_score(real_for_fid, fake_for_fid, dcgan.device_manager.device)
+                metrics['metrics']['fid_score'] = float(fid_score)
+                
+                print(f"  FID Score: {fid_score:.2f}")
+                
+            except Exception as e:
+                print(f"  FID computation failed: {e}")
+                metrics['metrics']['fid_error'] = str(e)
+        
+        if compute_inception_score and len(generated_images) >= 100:
+            print("Computing Inception Score...")
+            try:
+                from nesy_factory.GANs import compute_inception_score
+                
+                gen_for_is = generated_images[:100].to(dcgan.device_manager.device)
+                
+                if gen_for_is.size(2) != 299 or gen_for_is.size(3) != 299:
+                    from torchvision import transforms
+                    resize = transforms.Resize((299, 299))
+                    gen_for_is = torch.stack([resize(img) for img in gen_for_is])
+                
+                is_mean, is_std = compute_inception_score(gen_for_is, dcgan.device_manager.device)
+                metrics['metrics']['inception_score'] = {
+                    'mean': float(is_mean),
+                    'std': float(is_std)
+                }
+                print(f"  Inception Score: {is_mean:.2f} ± {is_std:.2f}")
+                
+            except Exception as e:
+                print(f"  Inception Score computation failed: {e}")
+                metrics['metrics']['inception_error'] = str(e)
+        
+        if 'training_history' in model_wrapper:
+            history = model_wrapper['training_history']
+            metrics['training_summary'] = {
+                'final_d_loss': history.get('final_d_loss', 0),
+                'final_g_loss': history.get('final_g_loss', 0),
+                'total_epochs': history.get('total_epochs', 0),
+                'training_time': history.get('total_training_time', 0)
+            }
+        
+        print("Evaluation Completed Successfully!")
+        
+        output_dir = os.path.dirname(args.eval_metrics)
+        if output_dir and not os.path.exists(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
+        
+        with open(args.eval_metrics, 'w') as f:
+            json.dump(metrics, f, indent=2)
+        
+        with open(args.eval_metrics_json, 'w') as f:
+            json.dump(metrics, f, indent=2)
+        
+        print(f"Saved evaluation metrics to: {args.eval_metrics}")
+        print(f"Saved JSON metrics to: {args.eval_metrics_json}")
+        
+        print("Evaluation Summary:")
+        if 'fid_score' in metrics['metrics']:
+            print(f"  FID Score: {metrics['metrics']['fid_score']:.2f}")
+        if 'inception_score' in metrics['metrics']:
+            is_data = metrics['metrics']['inception_score']
+            print(f"  Inception Score: {is_data['mean']:.2f} ± {is_data['std']:.2f}")
+        if 'pixel_diversity' in metrics['metrics']:
+            print(f"  Pixel Diversity: {metrics['metrics']['pixel_diversity']:.4f}")
       - --trained_model
       - {inputPath: trained_model}
       - --test_images
