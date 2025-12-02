@@ -19,7 +19,7 @@ outputs:
     description: "Generated sample images"
 implementation:
   container:
-    image: gurpreetgandhi/nesy-factory:v19
+    image: gurpreetgandhi/nesy-factory:v33
     command:
       - sh
       - -c
