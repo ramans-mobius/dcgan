@@ -24,13 +24,6 @@ implementation:
         import sys
         import base64
         
-        try:
-            from nesy_factory.GANs import DCGAN, DCGANConfig, TrainingAlgorithm
-            print("Successfully imported DCGAN from nesy_factory")
-        except ImportError as e:
-            print(f"Error importing from nesy_factory: {e}")
-            raise
-
         parser = argparse.ArgumentParser()
         parser.add_argument('--config', type=str, required=True)
         parser.add_argument('--model', type=str, required=True)
@@ -43,41 +36,36 @@ implementation:
         print("Initializing DCGAN Model")
         print("="*60)
         
-        use_forward_forward = config_dict.get('use_forward_forward', False)
-        use_cascaded_forward = config_dict.get('use_cascaded_forward', False)
+        # Map to your DCGAN config
+        from nesy_factory.GANs import DCGANConfig, TrainingAlgorithm, ActivationFunction, NormLayer, OptimizerType
         
-        if use_forward_forward:
-            training_algorithm = TrainingAlgorithm.FORWARD_FORWARD
-        elif use_cascaded_forward:
-            training_algorithm = TrainingAlgorithm.CASCADED_FORWARD
-        else:
-            training_algorithm = TrainingAlgorithm.BACKPROP
-        
+        # Build DCGAN config similar to your test script
         dcgan_config_dict = {
             'image_size': config_dict.get('image_size', 64),
             'channels': config_dict.get('channels', 3),
             'latent_dim': config_dict.get('latent_dim', 100),
             
             'generator_features': config_dict.get('generator_features', 64),
-            'generator_layers': config_dict.get('generator_layers', [256, 128, 64, 32]),
+            'generator_layers': config_dict.get('generator_layers', [512, 256, 128, 64, 32]),
             'generator_activation': config_dict.get('generator_activation', 'relu'),
             'generator_output_activation': config_dict.get('generator_output_activation', 'tanh'),
             'generator_norm': config_dict.get('generator_norm', 'batch_norm'),
+            'generator_dropout': config_dict.get('generator_dropout', 0.0),
             
             'discriminator_features': config_dict.get('discriminator_features', 64),
             'discriminator_layers': config_dict.get('discriminator_layers', [64, 128, 256, 512]),
             'discriminator_activation': config_dict.get('discriminator_activation', 'leaky_relu'),
             'discriminator_output_activation': config_dict.get('discriminator_output_activation', 'sigmoid'),
             'discriminator_norm': config_dict.get('discriminator_norm', 'batch_norm'),
+            'discriminator_dropout': config_dict.get('discriminator_dropout', 0.3),
             
-            'training_algorithm': training_algorithm.value,
-            
+            'training_algorithm': config_dict.get('training_algorithm', 'backprop'),
             'optimizer_type': config_dict.get('optimizer_type', 'adam'),
             'learning_rate': config_dict.get('learning_rate', 0.0002),
             'beta1': config_dict.get('beta1', 0.5),
             'beta2': config_dict.get('beta2', 0.999),
             
-            'batch_size': config_dict.get('batch_size', 64),
+            'batch_size': config_dict.get('batch_size', 32),
             'epochs': config_dict.get('epochs', 100),
             'n_critic': config_dict.get('n_critic', 5),
             
@@ -98,11 +86,9 @@ implementation:
             'seed': config_dict.get('seed', 42),
             'gradient_clip': config_dict.get('gradient_clip', None),
             'label_smoothing': config_dict.get('label_smoothing', 0.1),
-            
-            'compute_fid': config_dict.get('compute_fid', False),
-            'compute_inception_score': config_dict.get('compute_inception_score', False),
         }
         
+        # Create DCGAN config
         dcgan_config = DCGANConfig.from_dict(dcgan_config_dict)
         
         print(f"Model Architecture:")
@@ -111,22 +97,35 @@ implementation:
         print(f"  Latent Dimension: {dcgan_config.latent_dim}")
         print(f"  Training Algorithm: {dcgan_config.training_algorithm.value}")
         
-        dcgan_model = DCGAN(dcgan_config)
+        # Create trainer like in your test script
+        algorithm = config_dict.get('training_algorithm', 'backprop')
+        
+        if algorithm == 'forward_forward':
+            from nesy_factory.GANs import ForwardForwardGANTrainer
+            trainer = ForwardForwardGANTrainer(dcgan_config)
+        elif algorithm == 'cascaded_forward':
+            from nesy_factory.GANs import CascadedForwardGANTrainer
+            trainer = CascadedForwardGANTrainer(dcgan_config)
+        else:
+            from nesy_factory.GANs import BackpropGANTrainer
+            trainer = BackpropGANTrainer(dcgan_config)
+        
+        # Create wrapper like your test script
+        model_wrapper = {
+            'trainer': trainer,
+            'config': dcgan_config.to_dict(),
+            'algorithm': algorithm,
+            'model_type': 'DCGAN'
+        }
         
         output_dir = os.path.dirname(args.model)
         if output_dir and not os.path.exists(output_dir):
             os.makedirs(output_dir, exist_ok=True)
         
-        model_wrapper = {
-            'dcgan': dcgan_model,
-            'config': dcgan_config.to_dict(),
-            'model_type': 'DCGAN',
-            'training_method': dcgan_config.training_algorithm.value
-        }
-        
         with open(args.model, "wb") as f:
             pickle.dump(model_wrapper, f)
 
+        # Save config as base64
         config_b64 = base64.b64encode(json.dumps(dcgan_config.to_dict()).encode()).decode()
         
         with open(args.model_config_b64, "w") as f:
@@ -134,7 +133,7 @@ implementation:
 
         print("="*60)
         print(f"Successfully created DCGAN model")
-        print(f"Training Method: {dcgan_config.training_algorithm.value.upper()}")
+        print(f"Training Method: {algorithm.upper()}")
         print(f"Saved DCGAN model to {args.model}")
         print(f"Saved base64 config to {args.model_config_b64}")
         print("="*60)
