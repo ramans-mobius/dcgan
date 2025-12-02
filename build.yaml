@@ -4,6 +4,7 @@ inputs:
   - {name: config, type: String}
 outputs:
   - {name: model, type: Model}
+  - {name: model_config_b64, type: String}
 implementation:
   container:
     image: gurpreetgandhi/nesy-factory:v32
@@ -21,20 +22,19 @@ implementation:
         import os
         import pickle
         import sys
+        import base64
         
-        # Try to import from nesy_factory
         try:
             from nesy_factory.GANs import DCGAN, DCGANConfig, TrainingAlgorithm
             print("Successfully imported DCGAN from nesy_factory")
         except ImportError as e:
             print(f"Error importing from nesy_factory: {e}")
-            print("Creating fallback implementation...")
-            # Fallback implementation would go here
             raise
 
         parser = argparse.ArgumentParser()
         parser.add_argument('--config', type=str, required=True)
         parser.add_argument('--model', type=str, required=True)
+        parser.add_argument('--model_config_b64', type=str, required=True)
         args = parser.parse_args()
 
         config_dict = json.loads(args.config)
@@ -43,131 +43,80 @@ implementation:
         print("Initializing DCGAN Model")
         print("="*60)
         
-        # Extract training method
         use_forward_forward = config_dict.get('use_forward_forward', False)
-        use_cafo = config_dict.get('use_cafo', False)
+        use_cascaded_forward = config_dict.get('use_cascaded_forward', False)
         
-        # Validate only one training method is selected
-        if sum([use_cafo, use_forward_forward]) > 1:
-            raise ValueError("Only one training method can be selected: use_cafo or use_forward_forward")
-        
-        # Map to training algorithm enum
         if use_forward_forward:
             training_algorithm = TrainingAlgorithm.FORWARD_FORWARD
-        elif use_cafo:
+        elif use_cascaded_forward:
             training_algorithm = TrainingAlgorithm.CASCADED_FORWARD
         else:
             training_algorithm = TrainingAlgorithm.BACKPROP
         
-        # Build DCGAN config with defaults
         dcgan_config_dict = {
-            # Architecture
             'image_size': config_dict.get('image_size', 64),
             'channels': config_dict.get('channels', 3),
             'latent_dim': config_dict.get('latent_dim', 100),
             
-            # Generator
             'generator_features': config_dict.get('generator_features', 64),
             'generator_layers': config_dict.get('generator_layers', [256, 128, 64, 32]),
             'generator_activation': config_dict.get('generator_activation', 'relu'),
             'generator_output_activation': config_dict.get('generator_output_activation', 'tanh'),
             'generator_norm': config_dict.get('generator_norm', 'batch_norm'),
-            'generator_dropout': config_dict.get('generator_dropout', 0.0),
             
-            # Discriminator
             'discriminator_features': config_dict.get('discriminator_features', 64),
             'discriminator_layers': config_dict.get('discriminator_layers', [64, 128, 256, 512]),
             'discriminator_activation': config_dict.get('discriminator_activation', 'leaky_relu'),
             'discriminator_output_activation': config_dict.get('discriminator_output_activation', 'sigmoid'),
             'discriminator_norm': config_dict.get('discriminator_norm', 'batch_norm'),
-            'discriminator_dropout': config_dict.get('discriminator_dropout', 0.3),
             
-            # Training Algorithm
             'training_algorithm': training_algorithm.value,
             
-            # Optimizer
             'optimizer_type': config_dict.get('optimizer_type', 'adam'),
             'learning_rate': config_dict.get('learning_rate', 0.0002),
             'beta1': config_dict.get('beta1', 0.5),
             'beta2': config_dict.get('beta2', 0.999),
             
-            # Training Parameters
             'batch_size': config_dict.get('batch_size', 64),
             'epochs': config_dict.get('epochs', 100),
             'n_critic': config_dict.get('n_critic', 5),
             
-            # WGAN (optional)
             'use_wgan': config_dict.get('use_wgan', False),
             'clip_value': config_dict.get('clip_value', 0.01),
             'use_gradient_penalty': config_dict.get('use_gradient_penalty', False),
             'lambda_gp': config_dict.get('lambda_gp', 10.0),
             
-            # Forward-Forward specific
             'ff_theta': config_dict.get('ff_theta', 2.0),
             'ff_goodness_fn': config_dict.get('ff_goodness_fn', 'sum_squares'),
             'ff_positive_margin': config_dict.get('ff_positive_margin', 2.0),
             'ff_negative_margin': config_dict.get('ff_negative_margin', 0.0),
             
-            # Cascaded Forward specific
             'cafo_layers': config_dict.get('cafo_layers', 3),
             'cafo_layer_growth': config_dict.get('cafo_layer_growth', 1.5),
             
-            # Advanced
             'device': config_dict.get('device', 'auto'),
             'seed': config_dict.get('seed', 42),
             'gradient_clip': config_dict.get('gradient_clip', None),
             'label_smoothing': config_dict.get('label_smoothing', 0.1),
             
-            # Evaluation
             'compute_fid': config_dict.get('compute_fid', False),
             'compute_inception_score': config_dict.get('compute_inception_score', False),
         }
         
-        # Create DCGAN config
         dcgan_config = DCGANConfig.from_dict(dcgan_config_dict)
         
         print(f"Model Architecture:")
         print(f"  Image Size: {dcgan_config.image_size}x{dcgan_config.image_size}")
         print(f"  Channels: {dcgan_config.channels}")
         print(f"  Latent Dimension: {dcgan_config.latent_dim}")
-        print(f"  Generator Layers: {dcgan_config.generator_layers}")
-        print(f"  Discriminator Layers: {dcgan_config.discriminator_layers}")
         print(f"  Training Algorithm: {dcgan_config.training_algorithm.value}")
         
-        if use_forward_forward:
-            print(f"  Forward-Forward Parameters:")
-            print(f"    Theta: {dcgan_config.ff_theta}")
-            print(f"    Goodness Function: {dcgan_config.ff_goodness_fn}")
-            print(f"    Positive Margin: {dcgan_config.ff_positive_margin}")
-            print(f"    Negative Margin: {dcgan_config.ff_negative_margin}")
-        
-        elif use_cafo:
-            print(f"  Cascaded Forward Parameters:")
-            print(f"    Layers: {dcgan_config.cafo_layers}")
-            print(f"    Layer Growth: {dcgan_config.cafo_layer_growth}")
-        
-        else:
-            if dcgan_config.use_wgan:
-                print(f"  WGAN Parameters:")
-                print(f"    Clip Value: {dcgan_config.clip_value}")
-                if dcgan_config.use_gradient_penalty:
-                    print(f"    Gradient Penalty: Enabled (λ={dcgan_config.lambda_gp})")
-        
-        print(f"  Optimizer: {dcgan_config.optimizer_type.value}")
-        print(f"  Learning Rate: {dcgan_config.learning_rate}")
-        print(f"  Batch Size: {dcgan_config.batch_size}")
-        print(f"  Epochs: {dcgan_config.epochs}")
-        print(f"  N Critic: {dcgan_config.n_critic}")
-        
-        # Create DCGAN model
         dcgan_model = DCGAN(dcgan_config)
         
-        # Save model
         output_dir = os.path.dirname(args.model)
         if output_dir and not os.path.exists(output_dir):
             os.makedirs(output_dir, exist_ok=True)
         
-        # Create a wrapper for the model
         model_wrapper = {
             'dcgan': dcgan_model,
             'config': dcgan_config.to_dict(),
@@ -178,13 +127,21 @@ implementation:
         with open(args.model, "wb") as f:
             pickle.dump(model_wrapper, f)
 
+        config_b64 = base64.b64encode(json.dumps(dcgan_config.to_dict()).encode()).decode()
+        
+        with open(args.model_config_b64, "w") as f:
+            f.write(config_b64)
+
         print("="*60)
         print(f"Successfully created DCGAN model")
         print(f"Training Method: {dcgan_config.training_algorithm.value.upper()}")
         print(f"Saved DCGAN model to {args.model}")
+        print(f"Saved base64 config to {args.model_config_b64}")
         print("="*60)
     args:
       - --config
       - {inputValue: config}
       - --model
       - {outputPath: model}
+      - --model_config_b64
+      - {outputPath: model_config_b64}
