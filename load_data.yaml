@@ -1,31 +1,48 @@
-name: DCGAN Load data
-description: "Download ZIP from CDN, extract UI component images, preserve original structure with class names, create tabular format for preprocessing"
+name: DCGAN Load Data
+description: Download ZIP from CDN, extract UI component images, preserve original structure
 inputs:
   - {name: cdn_url, type: String, description: "CDN URL to download ZIP file"}
-  - {name: train_split, type: Float, description: "Train split ratio (0.0-1.0)", optional: true, default: "0.7"}
-  - {name: shuffle_seed, type: Integer, description: "Random seed for shuffling", optional: true, default: "42"}
-  - {name: target_column, type: String, description: "Name for target column in output", optional: true, default: "label"}
-  - {name: max_samples_per_class, type: Integer, description: "Maximum samples per class (0 for all)", optional: true, default: "0"}
+  - {name: train_split, type: Float, optional: true, default: "0.7", description: "Train split ratio"}
+  - {name: shuffle_seed, type: Integer, optional: true, default: "42", description: "Random seed"}
+  - {name: target_column, type: String, optional: true, default: "label", description: "Target column name"}
+  - {name: max_samples_per_class, type: Integer, optional: true, default: "0", description: "Max samples per class (0=all)"}
 outputs:
-  - {name: dataset_file, type: Dataset, description: "Parquet file with extracted features for preprocessing"}
-  - {name: original_dataset, type: Dataset, description: "Pickle file with DataWrapper preserving original structure"}
-  - {name: dataset_info, type: Data, description: "JSON metadata with class names and structure"}
-  - {name: train_split_info, type: Data, description: "Train/Test split indices"}
+  - {name: dataset_file, type: Dataset, description: "Tabular dataset for preprocessing"}
+  - {name: original_dataset, type: Dataset, description: "Original DataWrapper pickle"}
+  - {name: dataset_info, type: Data, description: "Dataset metadata"}
+  - {name: train_split_info, type: Data, description: "Train/test split indices"}
 implementation:
   container:
     image: gurpreetgandhi/nesy-factory:v32
     command:
-      - python3
-      - -u
+      - sh
       - -c
-    args:
       - |
-        import os, sys, json, zipfile, io, requests, argparse, pandas as pd, numpy as np, pickle, base64, tempfile, warnings, traceback, hashlib, random, pathlib, datetime
+        python3 -c "
+        import sys, json, os, pickle, zipfile, io, requests, numpy as np, random, pandas as pd, base64, tempfile, hashlib, pathlib, datetime
+        from urllib.parse import unquote
         from PIL import Image
         from collections import Counter, defaultdict
-        from sklearn.model_selection import train_test_split
-        import warnings
-        warnings.filterwarnings('ignore')
+        
+        print('Number of arguments:', len(sys.argv))
+        for i, arg in enumerate(sys.argv):
+            print(f'  Argument {i}: {arg[:100] if len(str(arg)) > 100 else arg}')
+        
+        # Get args - following working pattern
+        if len(sys.argv) < 10:
+            raise ValueError(f'Expected 10 arguments, got {len(sys.argv)}')
+        
+        cdn_url = sys.argv[1]                # $0
+        train_split = float(sys.argv[2])     # $1
+        shuffle_seed = int(sys.argv[3])      # $2
+        target_column = sys.argv[4]          # $3
+        max_samples_per_class = int(sys.argv[5])  # $4
+        dataset_file_path = sys.argv[6]      # $5
+        original_dataset_path = sys.argv[7]  # $6
+        dataset_info_path = sys.argv[8]      # $7
+        train_split_info_path = sys.argv[9]  # $8
+        
+        print('Starting DCGAN Data Loading...')
         
         class DataWrapper:
             def __init__(self):
@@ -343,21 +360,15 @@ implementation:
         
         if __name__ == "__main__":
             main()
-      - --cdn_url
+            print('Data loading completed successfully!')
+        " "$0" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8"
+    args:
       - {inputValue: cdn_url}
-      - --train_split
       - {inputValue: train_split}
-      - --shuffle_seed
       - {inputValue: shuffle_seed}
-      - --target_column
       - {inputValue: target_column}
-      - --max_samples_per_class
       - {inputValue: max_samples_per_class}
-      - --dataset_file
       - {outputPath: dataset_file}
-      - --original_dataset
       - {outputPath: original_dataset}
-      - --dataset_info
       - {outputPath: dataset_info}
-      - --train_split_info
       - {outputPath: train_split_info}
