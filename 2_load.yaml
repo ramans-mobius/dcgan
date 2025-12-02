@@ -6,7 +6,7 @@ inputs:
     description: "Type: 'cdn_url', 'torchvision', 'huggingface', 'local_dir', 'custom_url'"
   - name: dataset_path
     type: String
-    description: "Path/URL to dataset (for CDN: use %24%24 for $$)"
+    description: "Path/URL to dataset (for CDN: use $$$ for $$)"
   - name: dataset_name
     type: String
     description: "Dataset name (e.g., 'mnist', 'cifar10', 'naruto')"
