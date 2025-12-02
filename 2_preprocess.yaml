@@ -1,0 +1,262 @@
+name: Preprocess Dataset
+description: Universal dataset preprocessor for DCGAN and other models, supporting multiple transforms.
+inputs:
+  - name: train_data
+    type: Dataset
+  - name: test_data
+    type: Dataset
+  - name: dataset_info
+    type: DatasetInfo
+  - name: model_type
+    type: String
+    default: 'dcgan'
+    description: "Model type: 'dcgan', 'resnet', 'cnn', 'vanilla_gan'"
+  - name: model_config
+    type: String
+    description: "JSON configuration for model-specific preprocessing"
+outputs:
+  - name: processed_data
+    type: Dataset
+  - name: preprocess_info
+    type: String
+    description: "Preprocessing configuration for model"
+  - name: dcgan_config
+    type: String
+    description: "DCGAN-specific configuration if applicable"
+implementation:
+  container:
+    image: nikhilv215/nesy-factory:v22
+    command:
+      - sh
+      - -c
+      - |
+        python -c "
+        import sys, os, pickle, json, base64, io
+        import numpy as np
+        import torch
+        import torchvision.transforms as transforms
+        from torch.utils.data import Dataset, DataLoader
+        from PIL import Image
+        
+        print('Dataset Preprocessor Starting...')
+        
+        # Parse arguments
+        train_path = sys.argv[1]
+        test_path = sys.argv[2]
+        info_path = sys.argv[3]
+        model_type = sys.argv[4]
+        config_str = sys.argv[5]
+        out_path = sys.argv[6]
+        preprocess_info_path = sys.argv[7]
+        dcgan_config_path = sys.argv[8]
+        
+        print('Model Type: ' + model_type)
+        
+        # Load data
+        with open(train_path, 'rb') as f:
+            train_data = pickle.load(f)
+        with open(test_path, 'rb') as f:
+            test_data = pickle.load(f)
+        with open(info_path, 'rb') as f:
+            dataset_info = pickle.load(f)
+        
+        print('Loaded ' + str(len(train_data)) + ' train, ' + str(len(test_data)) + ' test samples')
+        
+        # Parse config
+        config = json.loads(config_str) if config_str else {}
+        
+        # Define custom dataset class
+        class ProcessedDataset(Dataset):
+            def __init__(self, data, transform=None, label_map=None, is_gan=False):
+                self.data = data
+                self.transform = transform
+                self.label_map = label_map
+                self.is_gan = is_gan
+            
+            def __len__(self):
+                return len(self.data)
+            
+            def __getitem__(self, idx):
+                item = self.data[idx]
+                
+                try:
+                    # Decode image
+                    img_data = base64.b64decode(item['image_data'])
+                    img = Image.open(io.BytesIO(img_data)).convert('RGB')
+                    
+                    # Apply transform if provided
+                    if self.transform:
+                        img = self.transform(img)
+                    
+                    # For GANs, we only need images
+                    if self.is_gan:
+                        return img
+                    
+                    # For classification, get label
+                    label_str = item.get('label', '0')
+                    if self.label_map:
+                        label = self.label_map.get(label_str, 0)
+                    else:
+                        label = int(label_str) if label_str.isdigit() else 0
+                    
+                    return img, label
+                    
+                except Exception as e:
+                    print('Error processing sample ' + str(idx) + ': ' + str(e))
+                    # Return dummy data
+                    if self.is_gan:
+                        return torch.zeros(3, 64, 64) if not self.transform else torch.zeros(3, 224, 224)
+                    else:
+                        return torch.zeros(3, 64, 64), 0 if not self.transform else (torch.zeros(3, 224, 224), 0)
+        
+        # Define transforms based on model type
+        if model_type == 'dcgan':
+            # DCGAN transforms
+            image_size = config.get('image_size', 64)
+            normalize = config.get('normalize', True)
+            
+            transform = transforms.Compose([
+                transforms.Resize(image_size),
+                transforms.CenterCrop(image_size),
+                transforms.ToTensor(),
+                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)) if normalize else lambda x: x
+            ])
+            
+            print('DCGAN transform: ' + str(image_size) + 'x' + str(image_size))
+            
+        elif model_type == 'resnet':
+            # ResNet transforms
+            image_size = config.get('image_size', 224)
+            
+            train_transform = transforms.Compose([
+                transforms.Resize(256),
+                transforms.RandomCrop(image_size),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+            ])
+            
+            test_transform = transforms.Compose([
+                transforms.Resize(256),
+                transforms.CenterCrop(image_size),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+            ])
+            
+            print('ResNet transform: ' + str(image_size) + 'x' + str(image_size))
+            
+        elif model_type == 'vanilla_gan':
+            # Vanilla GAN transforms
+            image_size = config.get('image_size', 28)
+            
+            transform = transforms.Compose([
+                transforms.Resize(image_size),
+                transforms.ToTensor(),
+                transforms.Normalize((0.5,), (0.5,))
+            ])
+            
+            print('Vanilla GAN transform: ' + str(image_size) + 'x' + str(image_size))
+            
+        else:
+            # Default transform
+            image_size = config.get('image_size', 64)
+            
+            transform = transforms.Compose([
+                transforms.Resize(image_size),
+                transforms.ToTensor(),
+                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+            ])
+            
+            print('Default transform: ' + str(image_size) + 'x' + str(image_size))
+        
+        # Create datasets
+        label_map = dataset_info.get('label_to_idx', {})
+        
+        if model_type == 'resnet':
+            # Different transforms for train/test
+            train_dataset = ProcessedDataset(train_data, train_transform, label_map, is_gan=False)
+            test_dataset = ProcessedDataset(test_data, test_transform, label_map, is_gan=False)
+        else:
+            # Same transform for all
+            is_gan = 'gan' in model_type.lower()
+            train_dataset = ProcessedDataset(train_data, transform, label_map, is_gan=is_gan)
+            test_dataset = ProcessedDataset(test_data, transform, label_map, is_gan=is_gan)
+        
+        # Create data wrapper
+        data_wrapper = {
+            'train_dataset': train_dataset,
+            'test_dataset': test_dataset,
+            'num_classes': len(dataset_info.get('classes', [])),
+            'class_names': dataset_info.get('classes', []),
+            'label_map': label_map,
+            'image_size': image_size,
+            'channels': config.get('channels', 3),
+            'model_type': model_type,
+            'dataset_info': dataset_info,
+            'has_test_data': len(test_data) > 0
+        }
+        
+        # Save processed data
+        os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
+        with open(out_path, 'wb') as f:
+            pickle.dump(data_wrapper, f)
+        
+        # Save preprocessing info
+        preprocess_info = {
+            'model_type': model_type,
+            'image_size': image_size,
+            'channels': config.get('channels', 3),
+            'normalized': True,
+            'dataset_stats': {
+                'train_samples': len(train_dataset),
+                'test_samples': len(test_dataset),
+                'num_classes': len(dataset_info.get('classes', [])),
+                'classes': dataset_info.get('classes', [])
+            }
+        }
+        
+        os.makedirs(os.path.dirname(preprocess_info_path) or '.', exist_ok=True)
+        with open(preprocess_info_path, 'w') as f:
+            json.dump(preprocess_info, f, indent=2)
+        
+        # Generate DCGAN config if needed
+        if model_type == 'dcgan':
+            channels = config.get('channels', 3)
+            latent_dim = config.get('latent_dim', 100)
+            
+            # Calculate architecture based on image size
+            import math
+            num_gen_layers = int(math.log2(image_size / 4))
+            gen_layers = [512 // (2 ** i) for i in range(num_gen_layers)]
+            
+            dcgan_config = {
+                'image_size': image_size,
+                'channels': channels,
+                'latent_dim': latent_dim,
+                'generator_layers': gen_layers,
+                'discriminator_layers': [64 * (2 ** i) for i in range(num_gen_layers - 1)],
+                'batch_size': config.get('batch_size', 32),
+                'learning_rate': config.get('learning_rate', 0.0002),
+                'epochs': config.get('epochs', 50),
+                'use_wgan': config.get('use_wgan', False)
+            }
+            
+            os.makedirs(os.path.dirname(dcgan_config_path) or '.', exist_ok=True)
+            with open(dcgan_config_path, 'w') as f:
+                json.dump(dcgan_config, f, indent=2)
+            
+            print('Generated DCGAN config for ' + str(image_size) + 'x' + str(image_size))
+        
+        print('Preprocessing complete!')
+        print('Train samples: ' + str(len(train_dataset)))
+        print('Test samples: ' + str(len(test_dataset)))
+        " "$0" "$1" "$2" "$3" "$4" "$5" "$6" "$7"
+    args:
+      - {inputPath: train_data}
+      - {inputPath: test_data}
+      - {inputPath: dataset_info}
+      - {inputValue: model_type}
+      - {inputValue: model_config}
+      - {outputPath: processed_data}
+      - {outputPath: preprocess_info}
+      - {outputPath: dcgan_config}
