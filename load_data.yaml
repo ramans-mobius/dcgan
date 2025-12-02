@@ -2,15 +2,13 @@ name: DCGAN Load Data
 description: Download ZIP from CDN, extract UI component images, preserve original structure
 inputs:
   - {name: cdn_url, type: String, description: "CDN URL to download ZIP file"}
-  - {name: train_split, type: Float, optional: true, default: "0.7", description: "Train split ratio"}
-  - {name: shuffle_seed, type: Integer, optional: true, default: "42", description: "Random seed"}
-  - {name: target_column, type: String, optional: true, default: "label", description: "Target column name"}
-  - {name: max_samples_per_class, type: Integer, optional: true, default: "0", description: "Max samples per class (0=all)"}
+  - {name: train_split, type: Float, optional: true, default: "0.7", description: "Train split ratio (0.0-1.0)"}
+  - {name: shuffle_seed, type: Integer, optional: true, default: "42", description: "Random seed for shuffling"}
+  - {name: target_column, type: String, optional: true, default: "label", description: "Name for target column in output"}
+  - {name: max_samples_per_class, type: Integer, optional: true, default: "0", description: "Maximum samples per class (0 for all)"}
 outputs:
-  - {name: dataset_file, type: Dataset, description: "Tabular dataset for preprocessing"}
-  - {name: original_dataset, type: Dataset, description: "Original DataWrapper pickle"}
-  - {name: dataset_info, type: Data, description: "Dataset metadata"}
-  - {name: train_split_info, type: Data, description: "Train/test split indices"}
+  - {name: original_dataset, type: Dataset, description: "Pickle file with DataWrapper preserving original structure"}
+  - {name: train_split_info, type: Data, description: "Train/Test split indices"}
 implementation:
   container:
     image: gurpreetgandhi/nesy-factory:v32
@@ -28,28 +26,21 @@ implementation:
         for i, arg in enumerate(sys.argv):
             print(f'  Argument {i}: {arg[:100] if len(str(arg)) > 100 else arg}')
         
-        # Get args directly from sys.argv - NO ARGPARSE!
-        if len(sys.argv) < 10:
-            raise ValueError(f'Expected 10 arguments, got {len(sys.argv)}')
+        # Get args - match working pattern
+        if len(sys.argv) < 8:
+            raise ValueError(f'Expected 8 arguments, got {len(sys.argv)}')
         
         cdn_url = sys.argv[1]                # $0
         train_split = float(sys.argv[2])     # $1
         shuffle_seed = int(sys.argv[3])      # $2
         target_column = sys.argv[4]          # $3
         max_samples_per_class = int(sys.argv[5])  # $4
-        dataset_file_path = sys.argv[6]      # $5
-        original_dataset_path = sys.argv[7]  # $6
-        dataset_info_path = sys.argv[8]      # $7
-        train_split_info_path = sys.argv[9]  # $8
+        original_dataset_path = sys.argv[6]  # $5
+        train_split_info_path = sys.argv[7]  # $6
         
         print('='*80)
-        print('LOAD UI COMPONENTS WITH ORIGINAL PRESERVATION')
+        print('DCGAN LOAD DATA')
         print('='*80)
-        print(f'CDN URL: {cdn_url}')
-        print(f'Train split: {train_split}')
-        print(f'Shuffle seed: {shuffle_seed}')
-        print(f'Target column: {target_column}')
-        print(f'Max samples per class: {max_samples_per_class}')
         
         class DataWrapper:
             def __init__(self):
@@ -80,9 +71,6 @@ implementation:
             def get_class_distribution(self):
                 distribution = Counter([img['class_name'] for img in self.images])
                 return dict(distribution)
-        
-        def ensure_dir(path):
-            os.makedirs(os.path.dirname(path) if os.path.dirname(path) else '.', exist_ok=True)
         
         def download_and_extract(url, temp_dir):
             print(f'[INFO] Downloading from: {url}')
@@ -121,49 +109,8 @@ implementation:
             
             data_wrapper.build_mappings()
             print(f'[INFO] Found {len(data_wrapper.images)} images')
-            print(f'[INFO] Class folders: {sorted(class_folders)}')
-            print(f'[INFO] Class distribution: {data_wrapper.get_class_distribution()}')
+            print(f'[INFO] Classes: {sorted(class_folders)}')
             return data_wrapper
-        
-        def extract_features_for_tabular(data_wrapper):
-            print('[INFO] Extracting features for tabular format...')
-            records = []
-            
-            for idx, img in enumerate(data_wrapper.images):
-                if idx % 100 == 0:
-                    print(f'[INFO] Processing image {idx+1}/{len(data_wrapper.images)}...')
-                
-                try:
-                    with Image.open(io.BytesIO(img['image_data'])) as pil_img:
-                        width, height = pil_img.size
-                        record = {
-                            'image_id': img['image_id'],
-                            'file_path': img['file_path'],
-                            'label': img['class_name'],
-                            'label_idx': img['label_idx'],
-                            'width': width,
-                            'height': height,
-                            'aspect_ratio': width / height if height > 0 else 0,
-                            'total_pixels': width * height,
-                        }
-                        
-                        if pil_img.mode in ('RGB', 'RGBA'):
-                            img_array = np.array(pil_img.convert('RGB'))
-                            for i, channel in enumerate(['red', 'green', 'blue']):
-                                channel_data = img_array[:, :, i].flatten()
-                                record[f'{channel}_mean'] = float(np.mean(channel_data))
-                                record[f'{channel}_std'] = float(np.std(channel_data))
-                            record['brightness_mean'] = float(np.mean(img_array))
-                        
-                        records.append(record)
-                except Exception as e:
-                    print(f'[WARN] Could not extract features for image {img[\"file_path\"]}: {e}')
-                    continue
-            
-            df = pd.DataFrame(records)
-            print(f'[INFO] Created tabular DataFrame: {df.shape}')
-            data_wrapper.tabular_data = df
-            return df
         
         def create_split_indices(data_wrapper, train_split_val, shuffle_seed_val):
             print(f'[INFO] Creating stratified split with ratio: {train_split_val}')
@@ -191,7 +138,6 @@ implementation:
             print(f'[INFO] Test samples: {len(test_indices)}')
             return np.array(train_indices), np.array(test_indices)
         
-        # MAIN EXECUTION - NO ARGPARSE!
         try:
             with tempfile.TemporaryDirectory() as temp_dir:
                 # 1. Download and extract
@@ -214,53 +160,24 @@ implementation:
                     new_wrapper.build_mappings()
                     data_wrapper = new_wrapper
                 
-                # 3. Extract features
-                df_tabular = extract_features_for_tabular(data_wrapper)
-                
-                # 4. Create split indices
+                # 3. Create split indices
                 train_indices, test_indices = create_split_indices(data_wrapper, train_split, shuffle_seed)
                 
-                # 5. Save outputs
-                ensure_dir(dataset_file_path)
-                ensure_dir(original_dataset_path)
-                ensure_dir(dataset_info_path)
-                ensure_dir(train_split_info_path)
-                
-                df_tabular.to_parquet(dataset_file_path, index=False)
-                print(f'[INFO] Saved tabular data to: {dataset_file_path}')
+                # 4. Save outputs
+                os.makedirs(os.path.dirname(original_dataset_path) or '.', exist_ok=True)
+                os.makedirs(os.path.dirname(train_split_info_path) or '.', exist_ok=True)
                 
                 with open(original_dataset_path, 'wb') as f:
                     pickle.dump(data_wrapper, f)
-                print(f'[INFO] Saved original structure to: {original_dataset_path}')
-                
-                dataset_info = {
-                    'timestamp': datetime.datetime.utcnow().isoformat() + 'Z',
-                    'total_samples': len(data_wrapper.images),
-                    'total_classes': len(data_wrapper.class_names),
-                    'class_names': data_wrapper.class_names,
-                    'class_to_idx': data_wrapper.class_to_idx,
-                    'idx_to_class': data_wrapper.idx_to_class,
-                    'class_distribution': data_wrapper.get_class_distribution(),
-                    'tabular_features': list(df_tabular.columns),
-                    'train_split': train_split,
-                    'shuffle_seed': shuffle_seed,
-                    'target_column': target_column,
-                    'original_structure_preserved': True,
-                    'dataset_version': '1.0'
-                }
-                
-                with open(dataset_info_path, 'w') as f:
-                    json.dump(dataset_info, f, indent=2)
-                print(f'[INFO] Saved dataset info to: {dataset_info_path}')
+                print(f'[INFO] Saved original dataset to: {original_dataset_path}')
                 
                 split_info = {
                     'train_indices': train_indices.tolist(),
                     'test_indices': test_indices.tolist(),
                     'train_size': len(train_indices),
                     'test_size': len(test_indices),
-                    'train_ratio': len(train_indices) / len(data_wrapper.images),
-                    'test_ratio': len(test_indices) / len(data_wrapper.images),
-                    'class_names': data_wrapper.class_names
+                    'class_names': data_wrapper.class_names,
+                    'timestamp': datetime.datetime.utcnow().isoformat() + 'Z'
                 }
                 
                 with open(train_split_info_path, 'w') as f:
@@ -271,12 +188,9 @@ implementation:
                 print('LOAD PROCESS COMPLETE')
                 print('='*80)
                 print(f'Total images: {len(data_wrapper.images)}')
-                print(f'Classes preserved: {data_wrapper.class_names}')
-                print(f'Tabular features: {len(df_tabular.columns)} columns')
+                print(f'Classes: {data_wrapper.class_names}')
                 print(f'Train samples: {len(train_indices)}')
                 print(f'Test samples: {len(test_indices)}')
-                print('Original structure preserved for later bricks!')
-                print('='*80)
                 
         except Exception as e:
             print(f'[ERROR] Failed: {e}')
@@ -284,14 +198,12 @@ implementation:
             sys.exit(1)
         
         print('Data loading completed successfully!')
-        " "$0" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8"
+        " "$0" "$1" "$2" "$3" "$4" "$5" "$6"
     args:
       - {inputValue: cdn_url}
       - {inputValue: train_split}
       - {inputValue: shuffle_seed}
       - {inputValue: target_column}
       - {inputValue: max_samples_per_class}
-      - {outputPath: dataset_file}
       - {outputPath: original_dataset}
-      - {outputPath: dataset_info}
       - {outputPath: train_split_info}
