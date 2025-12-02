@@ -17,28 +17,27 @@ implementation:
       - -c
       - |
         python3 -c "
-        import argparse
-        import json
-        import os
-        import pickle
-        import torch
-        import numpy as np
+        import sys, json, os, pickle, torch, numpy as np
         from datetime import datetime
         import io
         from PIL import Image
         from torchvision import transforms
 
         print('Number of arguments:', len(sys.argv))
-        print('Arguments:', sys.argv)
+        for i, arg in enumerate(sys.argv):
+            print(f'  Argument {i}: {arg[:100] if len(str(arg)) > 100 else arg}')
         
-        # Get args directly from command line
-        original_dataset_path = sys.argv[1]
-        train_split_info_path = sys.argv[2]
-        image_size = int(sys.argv[3])
-        normalize_str = sys.argv[4]
-        train_images_path = sys.argv[5]
-        test_images_path = sys.argv[6]
-        preprocessing_info_path = sys.argv[7]
+        # Get args - sys.argv[0] is the script name, actual args start at 1
+        if len(sys.argv) < 8:
+            raise ValueError(f'Expected 8 arguments (including script name), got {len(sys.argv)}')
+        
+        original_dataset_path = sys.argv[1]      # $0
+        train_split_info_path = sys.argv[2]      # $1
+        image_size = int(sys.argv[3])            # $2
+        normalize_str = sys.argv[4]              # $3
+        train_images_path = sys.argv[5]          # $4
+        test_images_path = sys.argv[6]           # $5
+        preprocessing_info_path = sys.argv[7]    # $6
 
         normalize = normalize_str.lower() == 'true'
 
