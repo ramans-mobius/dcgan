@@ -1,0 +1,486 @@
+name: Load Dataset
+description: Universal dataset loader supporting CDN URLs, PyTorch datasets, HuggingFace, and local files.
+inputs:
+  - name: dataset_type
+    type: String
+    description: "Type: 'cdn_url', 'torchvision', 'huggingface', 'local_dir', 'custom_url'"
+  - name: dataset_path
+    type: String
+    description: "Path/URL to dataset (for CDN: use %24%24 for $$)"
+  - name: dataset_name
+    type: String
+    description: "Dataset name (e.g., 'mnist', 'cifar10', 'naruto')"
+  - name: config_json
+    type: String
+    description: "JSON configuration for dataset processing"
+  - name: train_split
+    type: Float
+    default: '0.8'
+    description: "Train split ratio"
+  - name: shuffle_seed
+    type: Integer
+    default: '42'
+    description: "Random seed for shuffling"
+outputs:
+  - name: train_data
+    type: Dataset
+  - name: test_data
+    type: Dataset
+  - name: dataset_info
+    type: DatasetInfo
+  - name: data_config
+    type: String
+    description: "Data configuration for next steps"
+implementation:
+  container:
+    image: gurpreetgandhi/nesy-factory:v19
+    command:
+      - sh
+      - -c
+      - |
+        python -c "
+        import sys, os, pickle, json, base64, io, zipfile, tarfile, tempfile
+        import numpy as np
+        import torch
+        from torch.utils.data import Dataset, DataLoader, random_split
+        from PIL import Image, ImageFile
+        import requests
+        from urllib.parse import unquote, urlparse
+        from pathlib import Path
+        import shutil
+        from collections import Counter
+        import importlib
+        
+        # Enable loading of truncated images
+        ImageFile.LOAD_TRUNCATED_IMAGES = True
+        
+        print('Universal Dataset Loader Starting...')
+        
+        # Parse arguments
+        dataset_type = sys.argv[1]
+        dataset_path = sys.argv[2]
+        dataset_name = sys.argv[3]
+        config_str = sys.argv[4]
+        train_split = float(sys.argv[5])
+        shuffle_seed = int(sys.argv[6])
+        train_data_path = sys.argv[7]
+        test_data_path = sys.argv[8]
+        dataset_info_path = sys.argv[9]
+        data_config_path = sys.argv[10]
+        
+        print('Parameters:')
+        print('  Dataset Type: ' + dataset_type)
+        print('  Dataset Path: ' + (dataset_path[:100] + '...' if len(dataset_path) > 100 else dataset_path))
+        print('  Dataset Name: ' + dataset_name)
+        print('  Train Split: ' + str(train_split))
+        print('  Shuffle Seed: ' + str(shuffle_seed))
+        
+        # Parse config
+        config = json.loads(config_str) if config_str else {}
+        
+        # Define base dataset class
+        class BaseDataset(Dataset):
+            def __init__(self, data, transform=None):
+                self.data = data
+                self.transform = transform
+            
+            def __len__(self):
+                return len(self.data)
+            
+            def __getitem__(self, idx):
+                item = self.data[idx]
+                return item
+            
+            def get_info(self):
+                return {
+                    'size': len(self.data),
+                    'samples': self.data[:5] if self.data else []
+                }
+        
+        # Download from URL/CDN
+        def download_from_url(url, target_dir):
+            print('Downloading from: ' + url[:100] + '...')
+            os.makedirs(target_dir, exist_ok=True)
+            
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+            
+            try:
+                # Decode URL if needed
+                if '%24%24' in url:
+                    url = url.replace('%24%24', '$$')
+                
+                response = requests.get(url, headers=headers, stream=True, timeout=60)
+                response.raise_for_status()
+                
+                # Determine file type
+                content_type = response.headers.get('content-type', '')
+                filename = os.path.join(target_dir, 'downloaded_file')
+                
+                if 'zip' in content_type or url.endswith('.zip'):
+                    filename += '.zip'
+                elif 'tar' in content_type or url.endswith(('.tar', '.tar.gz', '.tgz')):
+                    filename += '.tar.gz'
+                else:
+                    # Try to guess from URL
+                    parsed = urlparse(url)
+                    filename = os.path.join(target_dir, os.path.basename(parsed.path))
+                
+                # Download file
+                with open(filename, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        f.write(chunk)
+                
+                print('Downloaded: ' + filename + ' (' + str(os.path.getsize(filename)/1024/1024) + ' MB)')
+                return filename
+                
+            except Exception as e:
+                print('Download failed: ' + str(e))
+                return None
+        
+        # Extract archive
+        def extract_archive(archive_path, target_dir):
+            print('Extracting: ' + archive_path)
+            os.makedirs(target_dir, exist_ok=True)
+            
+            try:
+                if archive_path.endswith('.zip'):
+                    with zipfile.ZipFile(archive_path, 'r') as zip_ref:
+                        zip_ref.extractall(target_dir)
+                        extracted = zip_ref.namelist()
+                        print('Extracted ' + str(len(extracted)) + ' files')
+                        return target_dir
+                
+                elif archive_path.endswith(('.tar', '.tar.gz', '.tgz')):
+                    with tarfile.open(archive_path, 'r:*') as tar_ref:
+                        tar_ref.extractall(target_dir)
+                        extracted = tar_ref.getnames()
+                        print('Extracted ' + str(len(extracted)) + ' files')
+                        return target_dir
+                
+                else:
+                    print('Unknown archive format: ' + archive_path)
+                    return None
+                    
+            except Exception as e:
+                print('Extraction failed: ' + str(e))
+                return None
+        
+        # Load images from directory
+        def load_images_from_dir(directory, max_samples=None):
+            print('Loading images from: ' + directory)
+            supported_extensions = ('.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.webp')
+            image_files = []
+            
+            for root, dirs, files in os.walk(directory):
+                for file in files:
+                    if file.lower().endswith(supported_extensions):
+                        full_path = os.path.join(root, file)
+                        image_files.append(full_path)
+            
+            print('Found ' + str(len(image_files)) + ' image files')
+            
+            # Limit samples if specified
+            if max_samples and max_samples < len(image_files):
+                import random
+                random.shuffle(image_files)
+                image_files = image_files[:max_samples]
+                print('Limited to ' + str(max_samples) + ' samples')
+            
+            dataset = []
+            for img_path in image_files:
+                try:
+                    # Determine label from directory structure
+                    rel_path = os.path.relpath(img_path, directory)
+                    label = rel_path.split(os.path.sep)[0] if os.path.sep in rel_path else 'unknown'
+                    
+                    with open(img_path, 'rb') as f:
+                        img_data = f.read()
+                        base64_data = base64.b64encode(img_data).decode('utf-8')
+                    
+                    dataset.append({
+                        'image_data': base64_data,
+                        'label': label,
+                        'filepath': img_path,
+                        'filename': os.path.basename(img_path)
+                    })
+                    
+                except Exception as e:
+                    print('Failed to load image: ' + str(img_path) + ' - ' + str(e))
+                    continue
+            
+            return dataset
+        
+        # Load PyTorch vision dataset
+        def load_torchvision_dataset(dataset_name, config):
+            print('Loading PyTorch dataset: ' + dataset_name)
+            
+            try:
+                import torchvision
+                from torchvision import datasets, transforms
+                
+                dataset_name = dataset_name.lower()
+                
+                # Common dataset configurations
+                dataset_configs = {
+                    'mnist': {
+                        'class': datasets.MNIST,
+                        'root': './data/mnist',
+                        'train': True,
+                        'download': True,
+                        'transform': transforms.ToTensor()
+                    },
+                    'fashionmnist': {
+                        'class': datasets.FashionMNIST,
+                        'root': './data/fashion-mnist',
+                        'train': True,
+                        'download': True,
+                        'transform': transforms.ToTensor()
+                    },
+                    'cifar10': {
+                        'class': datasets.CIFAR10,
+                        'root': './data/cifar10',
+                        'train': True,
+                        'download': True,
+                        'transform': transforms.ToTensor()
+                    },
+                    'cifar100': {
+                        'class': datasets.CIFAR100,
+                        'root': './data/cifar100',
+                        'train': True,
+                        'download': True,
+                        'transform': transforms.ToTensor()
+                    }
+                }
+                
+                if dataset_name not in dataset_configs:
+                    print('Unsupported torchvision dataset: ' + dataset_name)
+                    return []
+                
+                # Load dataset
+                ds_config = dataset_configs[dataset_name]
+                ds_class = ds_config['class']
+                
+                train_dataset = ds_class(
+                    root=ds_config['root'],
+                    train=True,
+                    download=ds_config['download'],
+                    transform=ds_config['transform']
+                )
+                
+                # Convert to our format
+                dataset = []
+                for idx in range(len(train_dataset)):
+                    img, label = train_dataset[idx]
+                    
+                    # Convert tensor to PIL Image, then to bytes
+                    if isinstance(img, torch.Tensor):
+                        # Convert to PIL Image
+                        if img.shape[0] == 1:  # Grayscale
+                            img_np = img.squeeze(0).numpy()
+                            img_pil = Image.fromarray((img_np * 255).astype(np.uint8), mode='L')
+                        else:  # RGB
+                            img_np = img.permute(1, 2, 0).numpy()
+                            img_pil = Image.fromarray((img_np * 255).astype(np.uint8), mode='RGB')
+                    else:
+                        img_pil = img
+                    
+                    # Convert to bytes
+                    img_bytes = io.BytesIO()
+                    img_pil.save(img_bytes, format='PNG')
+                    base64_data = base64.b64encode(img_bytes.getvalue()).decode('utf-8')
+                    
+                    dataset.append({
+                        'image_data': base64_data,
+                        'label': str(label),
+                        'dataset': dataset_name,
+                        'index': idx
+                    })
+                
+                return dataset
+                
+            except Exception as e:
+                print('Failed to load torchvision dataset: ' + str(e))
+                return []
+        
+        # Load HuggingFace dataset
+        def load_huggingface_dataset(dataset_name, config):
+            print('Loading HuggingFace dataset: ' + dataset_name)
+            
+            try:
+                from datasets import load_dataset
+                
+                # Split dataset name if it's in format 'repo/dataset'
+                if '/' in dataset_name:
+                    repo_id = dataset_name
+                else:
+                    repo_id = dataset_name
+                
+                # Load dataset
+                hf_dataset = load_dataset(repo_id)
+                
+                # Determine split
+                split = config.get('split', 'train')
+                if split not in hf_dataset:
+                    split = 'train'
+                
+                dataset = []
+                data_subset = hf_dataset[split]
+                
+                # Convert samples
+                for idx, sample in enumerate(data_subset):
+                    try:
+                        # Handle different HuggingFace dataset formats
+                        if 'image' in sample:
+                            img = sample['image']
+                            if hasattr(img, 'save'):
+                                img_bytes = io.BytesIO()
+                                img.save(img_bytes, format='PNG')
+                                base64_data = base64.b64encode(img_bytes.getvalue()).decode('utf-8')
+                            else:
+                                continue
+                        else:
+                            continue
+                        
+                        # Get label
+                        label = str(sample.get('label', sample.get('labels', idx)))
+                        
+                        dataset.append({
+                            'image_data': base64_data,
+                            'label': label,
+                            'dataset': dataset_name,
+                            'split': split,
+                            'index': idx
+                        })
+                        
+                    except Exception as e:
+                        print('Failed to process sample ' + str(idx) + ': ' + str(e))
+                        continue
+                
+                return dataset
+                
+            except Exception as e:
+                print('Failed to load HuggingFace dataset: ' + str(e))
+                return []
+        
+        # Main loading logic
+        loaded_dataset = []
+        
+        if dataset_type == 'cdn_url' or dataset_type == 'custom_url':
+            # Download from URL
+            with tempfile.TemporaryDirectory() as temp_dir:
+                archive_path = download_from_url(dataset_path, temp_dir)
+                if archive_path:
+                    extract_dir = os.path.join(temp_dir, 'extracted')
+                    extracted_path = extract_archive(archive_path, extract_dir)
+                    if extracted_path:
+                        loaded_dataset = load_images_from_dir(extracted_path)
+        
+        elif dataset_type == 'local_dir':
+            # Load from local directory
+            loaded_dataset = load_images_from_dir(dataset_path)
+        
+        elif dataset_type == 'torchvision':
+            # Load PyTorch dataset
+            loaded_dataset = load_torchvision_dataset(dataset_name, config)
+        
+        elif dataset_type == 'huggingface':
+            # Load HuggingFace dataset
+            loaded_dataset = load_huggingface_dataset(dataset_name, config)
+        
+        else:
+            print('Unknown dataset type: ' + dataset_type)
+            loaded_dataset = []
+        
+        # Check if we got data
+        if not loaded_dataset:
+            print('No data loaded. Creating empty dataset.')
+            loaded_dataset = [{'image_data': '', 'label': 'none', 'error': 'no_data'}]
+        
+        print('Loaded ' + str(len(loaded_dataset)) + ' samples')
+        
+        # Create dataset info
+        labels = [item.get('label', 'unknown') for item in loaded_dataset]
+        unique_labels = sorted(list(set(labels)))
+        label_to_idx = {label: idx for idx, label in enumerate(unique_labels)}
+        label_distribution = Counter(labels)
+        
+        dataset_info = {
+            'total_samples': len(loaded_dataset),
+            'classes': unique_labels,
+            'class_distribution': dict(label_distribution),
+            'label_to_idx': label_to_idx,
+            'output_dim': len(unique_labels),
+            'train_split_ratio': train_split,
+            'shuffle_seed': shuffle_seed,
+            'dataset_type': dataset_type,
+            'dataset_name': dataset_name,
+            'original_path': dataset_path
+        }
+        
+        print('Dataset: ' + str(len(loaded_dataset)) + ' samples, ' + str(len(unique_labels)) + ' classes')
+        
+        # Split data
+        train_size = int(train_split * len(loaded_dataset))
+        test_size = len(loaded_dataset) - train_size
+        
+        if train_size > 0 and test_size > 0:
+            train_indices, test_indices = random_split(
+                range(len(loaded_dataset)), 
+                [train_size, test_size],
+                generator=torch.Generator().manual_seed(shuffle_seed)
+            )
+            
+            train_data = [loaded_dataset[i] for i in train_indices]
+            test_data = [loaded_dataset[i] for i in test_indices]
+        else:
+            print('Warning: Dataset too small for splitting. Using all data for train.')
+            train_data = loaded_dataset
+            test_data = []
+        
+        # Save outputs
+        os.makedirs(os.path.dirname(train_data_path) or '.', exist_ok=True)
+        with open(train_data_path, 'wb') as f:
+            pickle.dump(train_data, f)
+        
+        os.makedirs(os.path.dirname(test_data_path) or '.', exist_ok=True)
+        with open(test_data_path, 'wb') as f:
+            pickle.dump(test_data, f)
+        
+        os.makedirs(os.path.dirname(dataset_info_path) or '.', exist_ok=True)
+        with open(dataset_info_path, 'wb') as f:
+            pickle.dump(dataset_info, f)
+        
+        # Create data configuration for next steps
+        data_config = {
+            'dataset_type': dataset_type,
+            'dataset_name': dataset_name,
+            'num_classes': len(unique_labels),
+            'image_size': config.get('image_size', 224),
+            'channels': config.get('channels', 3),
+            'requires_preprocessing': True,
+            'has_labels': len(unique_labels) > 1,
+            'sample_count': len(loaded_dataset)
+        }
+        
+        os.makedirs(os.path.dirname(data_config_path) or '.', exist_ok=True)
+        with open(data_config_path, 'w') as f:
+            json.dump(data_config, f, indent=2)
+        
+        print('Dataset loading complete!')
+        print('Train samples: ' + str(len(train_data)))
+        print('Test samples: ' + str(len(test_data)))
+        print('Classes: ' + str(unique_labels))
+        " "$0" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"
+    args:
+      - {inputValue: dataset_type}
+      - {inputValue: dataset_path}
+      - {inputValue: dataset_name}
+      - {inputValue: config_json}
+      - {inputValue: train_split}
+      - {inputValue: shuffle_seed}
+      - {outputPath: train_data}
+      - {outputPath: test_data}
+      - {outputPath: dataset_info}
+      - {outputPath: data_config}
