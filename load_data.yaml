@@ -1,4 +1,4 @@
-name: DCGAN Load Data
+name: 2 DCGAN Load Data
 description: Download ZIP from CDN, extract UI component images, preserve original structure
 inputs:
   - {name: cdn_url, type: String, description: "CDN URL to download ZIP file"}
