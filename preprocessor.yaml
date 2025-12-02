@@ -1,4 +1,4 @@
-name: DCGAN Image Preprocessor
+name: 2 DCGAN Image Preprocessor
 description: Preprocess images for DCGAN training - resize, normalize, and create train/test splits.
 inputs:
   - {name: original_dataset, type: Dataset, description: "Original DataWrapper pickle with images"}
@@ -8,7 +8,6 @@ inputs:
 outputs:
   - {name: train_images, type: Dataset, description: "Pickled train images tensor"}
   - {name: test_images, type: Dataset, description: "Pickled test images tensor"}
-  - {name: preprocessing_info, type: Data, description: "JSON with preprocessing details"}
 implementation:
   container:
     image: gurpreetgandhi/nesy-factory:v32
@@ -27,9 +26,9 @@ implementation:
         for i, arg in enumerate(sys.argv):
             print(f'  Argument {i}: {arg[:100] if len(str(arg)) > 100 else arg}')
         
-        # Get args - sys.argv[0] is the script name, actual args start at 1
-        if len(sys.argv) < 8:
-            raise ValueError(f'Expected 8 arguments (including script name), got {len(sys.argv)}')
+        # Get args - match working pattern
+        if len(sys.argv) < 7:
+            raise ValueError(f'Expected 7 arguments, got {len(sys.argv)}')
         
         original_dataset_path = sys.argv[1]      # $0
         train_split_info_path = sys.argv[2]      # $1
@@ -37,11 +36,12 @@ implementation:
         normalize_str = sys.argv[4]              # $3
         train_images_path = sys.argv[5]          # $4
         test_images_path = sys.argv[6]           # $5
-        preprocessing_info_path = sys.argv[7]    # $6
 
         normalize = normalize_str.lower() == 'true'
 
-        print('Starting DCGAN Image Preprocessing')
+        print('='*80)
+        print('DCGAN IMAGE PREPROCESSOR')
+        print('='*80)
         print(f'Image size: {image_size}x{image_size}')
         print(f'Normalize: {normalize}')
 
@@ -99,7 +99,6 @@ implementation:
                             
                 except Exception as e:
                     failed += 1
-                    print(f'  Failed to process image {idx}: {str(e)[:100]}')
                     continue
             
             if images:
@@ -117,9 +116,8 @@ implementation:
         test_tensor = process_images(test_indices, 'test')
 
         # Save processed images
-        output_dir = os.path.dirname(train_images_path)
-        if output_dir and not os.path.exists(output_dir):
-            os.makedirs(output_dir, exist_ok=True)
+        os.makedirs(os.path.dirname(train_images_path) or '.', exist_ok=True)
+        os.makedirs(os.path.dirname(test_images_path) or '.', exist_ok=True)
 
         with open(train_images_path, 'wb') as f:
             pickle.dump(train_tensor, f)
@@ -129,29 +127,13 @@ implementation:
             pickle.dump(test_tensor, f)
         print(f'Saved test images to: {test_images_path}')
 
-        # Create preprocessing info
-        preprocessing_info = {
-            'timestamp': datetime.now().isoformat(),
-            'image_size': image_size,
-            'normalized': normalize,
-            'train_samples': len(train_tensor) if train_tensor is not None else 0,
-            'test_samples': len(test_tensor) if test_tensor is not None else 0,
-            'tensor_shape': list(train_tensor.shape) if train_tensor is not None else None,
-            'data_range': '[-1, 1]' if normalize else '[0, 1]',
-            'original_dataset_info': {
-                'total_images': len(data_wrapper.images),
-                'classes': data_wrapper.class_names if hasattr(data_wrapper, 'class_names') else [],
-                'train_indices_count': len(train_indices),
-                'test_indices_count': len(test_indices)
-            }
-        }
-
-        with open(preprocessing_info_path, 'w') as f:
-            json.dump(preprocessing_info, f, indent=2)
-
-        print(f'Saved preprocessing info to: {preprocessing_info_path}')
+        print('='*80)
+        print('PREPROCESSING COMPLETE')
+        print('='*80)
+        print(f'Train tensor shape: {train_tensor.shape if train_tensor is not None else \"None\"}')
+        print(f'Test tensor shape: {test_tensor.shape if test_tensor is not None else \"None\"}')
         print('Image preprocessing completed successfully!')
-        " "$0" "$1" "$2" "$3" "$4" "$5" "$6"
+        " "$0" "$1" "$2" "$3" "$4" "$5"
     args:
       - {inputPath: original_dataset}    
       - {inputPath: train_split_info}  
@@ -159,4 +141,3 @@ implementation:
       - {inputValue: normalize}
       - {outputPath: train_images}
       - {outputPath: test_images}
-      - {outputPath: preprocessing_info}
