@@ -31,6 +31,7 @@ implementation:
         if len(sys.argv) < 8:
             raise ValueError(f'Expected 8 arguments (including script name), got {len(sys.argv)}')
         
+        # IMPORTANT: With inputValue, KFP passes the actual file path as a string
         original_dataset_path = sys.argv[1]      # $0
         train_split_info_path = sys.argv[2]      # $1
         image_size = int(sys.argv[3])            # $2
@@ -46,10 +47,12 @@ implementation:
         print(f'Normalize: {normalize}')
 
         # Load original dataset
+        print(f'Loading original dataset from: {original_dataset_path}')
         with open(original_dataset_path, 'rb') as f:
             data_wrapper = pickle.load(f)
 
         # Load split info
+        print(f'Loading split info from: {train_split_info_path}')
         with open(train_split_info_path, 'r') as f:
             split_info = json.load(f)
 
@@ -97,6 +100,7 @@ implementation:
                             
                 except Exception as e:
                     failed += 1
+                    print(f'  Failed to process image {idx}: {str(e)[:100]}')
                     continue
             
             if images:
@@ -150,8 +154,8 @@ implementation:
         print('Image preprocessing completed successfully!')
         " "$0" "$1" "$2" "$3" "$4" "$5" "$6"
     args:
-      - {inputPath: original_dataset}
-      - {inputPath: train_split_info}
+      - {inputValue: original_dataset}    # CHANGED: inputValue instead of inputPath
+      - {inputValue: train_split_info}    # CHANGED: inputValue instead of inputPath
       - {inputValue: image_size}
       - {inputValue: normalize}
       - {outputPath: train_images}
