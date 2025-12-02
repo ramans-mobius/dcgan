@@ -154,8 +154,8 @@ implementation:
         print('Image preprocessing completed successfully!')
         " "$0" "$1" "$2" "$3" "$4" "$5" "$6"
     args:
-      - {inputValue: original_dataset}    # CHANGED: inputValue instead of inputPath
-      - {inputValue: train_split_info}    # CHANGED: inputValue instead of inputPath
+      - {inputPath: original_dataset}    
+      - {inputPath: train_split_info}    # CHANGED: inputValue instead of inputPath
       - {inputValue: image_size}
       - {inputValue: normalize}
       - {outputPath: train_images}
