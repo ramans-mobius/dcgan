@@ -33,7 +33,7 @@ outputs:
     description: "Data configuration for next steps"
 implementation:
   container:
-    image: gurpreetgandhi/nesy-factory:v19
+    image: gurpreetgandhi/nesy-factory:v33
     command:
       - sh
       - -c
