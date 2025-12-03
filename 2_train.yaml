@@ -24,6 +24,10 @@ implementation:
       - sh
       - -c
       - |
+        # Install dependencies first
+        pip install torch torchvision pillow numpy --quiet
+        echo "Dependencies installed successfully"
+        
         python -c "
         import sys, os, pickle, json, base64, io, math
         import torch
