@@ -1,4 +1,4 @@
-name: Preprocess For GAN
+name: 2 Preprocess For GAN
 description: Preprocesses dataset for both DCGAN and Vanilla GAN based on model type.
 inputs:
   - name: train_data
@@ -10,7 +10,6 @@ inputs:
     description: "Data configuration from LoadDataset"
   - name: model_config
     type: String
-    default: "{\"model_type\": \"dcgan\"}"
     description: "GAN model configuration (dcgan or vanilla_gan)"
 outputs:
   - name: processed_data
