@@ -1,4 +1,4 @@
-name: Preprocess For GAN
+name: 2 Preprocess For GAN
 description: Preprocesses dataset for both DCGAN and Vanilla GAN based on model type.
 inputs:
   - name: train_data
@@ -24,14 +24,12 @@ implementation:
       - sh
       - -c
       - |
-        # Install dependencies
-        pip install torchvision pillow numpy --quiet
-        echo "Installed dependencies for GAN preprocessing"
-        exec "$0" "$@"
-      - python3
-      - -u
-      - -c
-      - "import sys, os, pickle, json, base64, io, math
+        # Fix torch version
+        pip uninstall -y nesy-factory xformers --quiet 2>/dev/null || true
+        pip install torch==2.9.0 torchvision pillow numpy --quiet
+        echo "Dependencies installed successfully"
+        python3 -c "
+          import sys, os, pickle, json, base64, io, math
           import numpy as np
           import torch
           import torchvision.transforms as transforms
@@ -78,10 +76,8 @@ implementation:
           
           # Adjust default sizes based on model type
           if is_vanilla_gan:
-              # Vanilla GAN typically uses 28x28 (MNIST size)
               default_size = 28
           else:
-              # DCGAN typically uses 64x64
               default_size = 64
           
           target_size = model_config.get('target_size', image_size)
@@ -93,7 +89,7 @@ implementation:
           print('  Channels: ' + str(channels))
           print('  Target Size: ' + str(target_size))
           
-          # Define dataset class that works for both GAN types
+          # Define dataset class
           class GANDataset(Dataset):
               def __init__(self, data_list, transform=None, model_type='dcgan', target_size=64, channels=3):
                   self.data_list = data_list
@@ -107,39 +103,31 @@ implementation:
               
               def __getitem__(self, idx):
                   item = self.data_list[idx]
-                  
                   try:
-                      # Decode base64 image
                       img_data = base64.b64decode(item['image_data'])
                       img = Image.open(io.BytesIO(img_data))
                       
-                      # Convert to appropriate mode
                       if self.channels == 1 and img.mode != 'L':
                           img = img.convert('L')
                       elif self.channels == 3 and img.mode != 'RGB':
                           img = img.convert('RGB')
                       
-                      # Apply transform
                       if self.transform:
                           img = self.transform(img)
                       
-                      # For Vanilla GAN, flatten the image
                       if self.model_type == 'vanilla_gan':
-                          img = img.view(-1)  # Flatten for fully connected layers
+                          img = img.view(-1)
                       
                       return img
-                      
                   except Exception as e:
                       print('Error processing image ' + str(idx) + ': ' + str(e))
-                      # Return appropriate tensor based on model type
                       if self.model_type == 'vanilla_gan':
                           return torch.zeros(self.target_size * self.target_size * self.channels)
                       else:
                           return torch.zeros(self.channels, self.target_size, self.target_size)
           
-          # Create transform based on model type
+          # Create transform
           if is_vanilla_gan:
-              # Vanilla GAN: resize to target size, normalize to [-1, 1]
               if channels == 1:
                   transform = transforms.Compose([
                       transforms.Resize(target_size),
@@ -153,7 +141,6 @@ implementation:
                       transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
                   ])
           else:
-              # DCGAN: resize and center crop, normalize to [-1, 1]
               if channels == 1:
                   transform = transforms.Compose([
                       transforms.Resize(target_size),
@@ -172,12 +159,12 @@ implementation:
           # Create dataset
           dataset = GANDataset(train_data, transform, model_type, target_size, channels)
           
-          # Calculate input dimension based on model type
+          # Calculate input dimension
           if is_vanilla_gan:
               input_dim = target_size * target_size * channels
-              print('Vanilla GAN input dimension (flattened): ' + str(input_dim))
+              print('Vanilla GAN input dimension: ' + str(input_dim))
           else:
-              input_dim = None  # DCGAN doesn't need flattened dimension
+              input_dim = None
           
           # Create data wrapper
           data_wrapper = {
@@ -198,9 +185,8 @@ implementation:
           with open(processed_data_path, 'wb') as f:
               pickle.dump(data_wrapper, f)
           
-          # Create GAN configuration based on model type
+          # Create GAN configuration
           if is_vanilla_gan:
-              # Vanilla GAN configuration
               gan_config = {
                   'model_type': 'vanilla_gan',
                   'input_dim': input_dim,
@@ -216,8 +202,6 @@ implementation:
                   'device': 'cuda' if torch.cuda.is_available() else 'cpu'
               }
           else:
-              # DCGAN configuration
-              # Calculate architecture based on image size
               num_gen_layers = max(2, int(math.log2(target_size / 4)))
               gen_layers = [512 // (2 ** i) for i in range(num_gen_layers)]
               
@@ -246,10 +230,10 @@ implementation:
           
           print('GAN Preprocessing Complete!')
           print('  Model type: ' + model_type.upper())
-          print('  Samples processed: ' + str(len(dataset)))
+          print('  Samples: ' + str(len(dataset)))
           print('  Image size: ' + str(target_size) + 'x' + str(target_size))
           print('  Channels: ' + str(channels))
-          print('  Config saved to: ' + gan_config_path)"
+        " "$0" "$1" "$2" "$3" "$4" "$5" "$6"
     args:
       - {inputPath: train_data}
       - {inputPath: dataset_info}
