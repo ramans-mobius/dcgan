@@ -19,12 +19,9 @@ implementation:
       - |
         # Install dependencies
         pip install torch torchvision --quiet
-        echo "Installed dependencies for GAN initialization"
-        exec "$0" "$@"
-      - python3
-      - -u
-      - -c
-      - "
+        echo "Dependencies installed for GAN initialization"
+        
+        python -c "
         import sys, os, pickle, json, torch
         
         print('Starting GAN Model Initialization (DCGAN or Vanilla GAN)')
@@ -247,7 +244,7 @@ implementation:
         
         print(model_type.upper() + ' Model Initialization Complete')
         print('Saved model to: ' + model_path)
-        "
+        " "$0" "$1" "$2"
     args:
       - {inputValue: gan_config}
       - {outputPath: model}
