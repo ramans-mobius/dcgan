@@ -1,23 +1,25 @@
-name: Evaluate DCGAN Model
-description: Evaluates DCGAN model and generates final images.
+name: 2 Evaluate GAN Model
+description: Evaluates trained GAN model and generates metrics.
 inputs:
   - name: trained_model
     type: Model
   - name: test_data
     type: Dataset
-  - name: config
+  - name: training_history
+    type: String
+  - name: eval_config
     type: String
     description: "Evaluation configuration"
 outputs:
-  - name: eval_metrics
+  - name: eval_results
     type: String
     description: "Evaluation metrics JSON"
-  - name: generated_images
+  - name: final_images
     type: Dataset
-    description: "Final generated images"
-  - name: evaluation_report
+    description: "Generated images for analysis"
+  - name: metrics_summary
     type: String
-    description: "Human-readable evaluation report"
+    description: "Summary of metrics"
 implementation:
   container:
     image: gurpreetgandhi/nesy-factory:v33
@@ -26,202 +28,235 @@ implementation:
       - -c
       - |
         python -c "
-        import sys, os, pickle, json, base64, io
+        import sys, os, pickle, json, base64, io, math, numpy as np
         import torch
-        import numpy as np
+        from torch.utils.data import DataLoader
         from PIL import Image
         
-        print('Starting DCGAN Model Evaluation')
+        print('Starting GAN Evaluation')
         
         # Parse arguments
         trained_model_path = sys.argv[1]
         test_data_path = sys.argv[2]
-        config_str = sys.argv[3]
-        eval_metrics_path = sys.argv[4]
-        generated_images_path = sys.argv[5]
-        evaluation_report_path = sys.argv[6]
+        training_history_str = sys.argv[3]
+        eval_config_str = sys.argv[4]
+        eval_results_path = sys.argv[5]
+        final_images_path = sys.argv[6]
+        metrics_summary_path = sys.argv[7]
         
         print('Loading model and data...')
         
         # Load trained model
         with open(trained_model_path, 'rb') as f:
-            dcgan_model = pickle.load(f)
+            gan_model = pickle.load(f)
         
-        # Load test data (if needed for comparison)
-        test_data = None
-        if os.path.exists(test_data_path):
-            with open(test_data_path, 'rb') as f:
-                test_data = pickle.load(f)
+        # Load test data
+        with open(test_data_path, 'rb') as f:
+            test_data_wrapper = pickle.load(f)
         
-        # Parse config
+        # Parse configs
         try:
-            config = json.loads(config_str)
+            training_history = json.loads(training_history_str)
         except:
-            config = {}
+            training_history = {}
         
-        num_generate = config.get('num_generate', 16)
-        image_size = getattr(dcgan_model.config, 'image_size', 64)
+        try:
+            eval_config = json.loads(eval_config_str)
+        except:
+            eval_config = {}
         
-        print('Evaluation Parameters:')
-        print('  Images to generate: ' + str(num_generate))
-        print('  Image size: ' + str(image_size))
+        # Determine model type
+        model_type = 'dcgan'
+        if hasattr(gan_model, 'config'):
+            if hasattr(gan_model.config, 'model_type'):
+                model_type = gan_model.config.model_type
+            elif hasattr(gan_model.config, 'input_dim'):
+                model_type = 'vanilla_gan'
         
-        # Generate final images
-        generated_images = []
-        metrics = {
-            'generation_success': True,
-            'num_images_generated': 0,
-            'image_size': image_size,
-            'model_parameters': {},
-            'quality_metrics': {}
+        print(f'Evaluating {model_type.upper()} GAN')
+        
+        # Get dataset from wrapper
+        test_dataset = test_data_wrapper.get('dataset')
+        if not test_dataset:
+            print('No test dataset found')
+            test_dataset = []
+        
+        # Extract model info
+        model_info = {
+            'model_type': model_type,
+            'evaluation_time': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'device': 'cuda' if torch.cuda.is_available() else 'cpu'
         }
         
+        # Add model-specific info
+        if hasattr(gan_model, 'config'):
+            config_dict = gan_model.config.__dict__ if hasattr(gan_model.config, '__dict__') else gan_model.config
+            for key in ['latent_dim', 'image_size', 'channels', 'input_dim', 'training_algorithm']:
+                if key in config_dict:
+                    model_info[key] = config_dict[key]
+        
+        # Generate evaluation samples
+        sample_count = eval_config.get('num_samples', 100)
+        final_images = []
+        
         try:
-            # Set model to eval mode
-            dcgan_model.generator.eval()
-            
-            # Generate images
-            with torch.no_grad():
-                z = torch.randn(num_generate, dcgan_model.config.latent_dim, 1, 1)
-                if hasattr(dcgan_model.config, 'device') and dcgan_model.config.device != 'cpu':
-                    z = z.to(dcgan_model.config.device)
+            if hasattr(gan_model, 'generator') and gan_model.generator:
+                print(f'Generating {sample_count} samples...')
                 
-                samples = dcgan_model.generator(z)
-                samples = samples.cpu()
-            
-            # Convert to base64 and collect
-            for i in range(samples.size(0)):
-                sample_img = samples[i]
+                # Get latent dimension
+                latent_dim = model_info.get('latent_dim', 100)
                 
-                # Denormalize from [-1, 1] to [0, 1]
-                if sample_img.min() < 0:
-                    sample_img = (sample_img + 1) / 2
+                # Generate noise
+                gan_model.generator.eval()
+                with torch.no_grad():
+                    # Generate multiple batches
+                    for i in range(0, sample_count, 16):
+                        batch_size = min(16, sample_count - i)
+                        noise = torch.randn(batch_size, latent_dim)
+                        
+                        # Add spatial dimensions for DCGAN
+                        if model_type == 'dcgan':
+                            noise = noise.view(batch_size, latent_dim, 1, 1)
+                        
+                        # Generate images
+                        samples = gan_model.generator(noise).cpu()
+                        
+                        # Denormalize from [-1, 1] to [0, 1]
+                        samples = (samples + 1) / 2
+                        samples = torch.clamp(samples, 0, 1)
+                        
+                        # Convert to base64
+                        for j in range(samples.size(0)):
+                            sample = samples[j]
+                            
+                            # Determine image dimensions
+                            if len(sample.shape) == 3:
+                                # DCGAN format [C, H, W]
+                                if sample.shape[0] == 1:  # Grayscale
+                                    img_np = sample.squeeze(0).numpy()
+                                    img_pil = Image.fromarray((img_np * 255).astype(np.uint8), mode='L')
+                                else:  # RGB
+                                    img_np = sample.permute(1, 2, 0).numpy()
+                                    img_pil = Image.fromarray((img_np * 255).astype(np.uint8), mode='RGB')
+                            else:
+                                # Vanilla GAN flattened
+                                img_size = int(math.sqrt(sample.shape[0]))
+                                img_np = sample.view(img_size, img_size).numpy()
+                                img_pil = Image.fromarray((img_np * 255).astype(np.uint8), mode='L')
+                            
+                            # Convert to base64
+                            img_bytes = io.BytesIO()
+                            img_pil.save(img_bytes, format='PNG')
+                            base64_data = base64.b64encode(img_bytes.getvalue()).decode('utf-8')
+                            
+                            final_images.append({
+                                'sample_id': i + j,
+                                'image_data': base64_data,
+                                'model_type': model_type,
+                                'filename': f'{model_type}_sample_{i+j}.png'
+                            })
                 
-                # Ensure values are in [0, 1]
-                sample_img = torch.clamp(sample_img, 0, 1)
-                
-                # Convert to PIL Image
-                if sample_img.shape[0] == 1:  # Grayscale
-                    img_np = sample_img.squeeze(0).numpy()
-                    img_pil = Image.fromarray((img_np * 255).astype(np.uint8), mode='L')
-                else:  # RGB
-                    img_np = sample_img.permute(1, 2, 0).numpy()
-                    img_pil = Image.fromarray((img_np * 255).astype(np.uint8), mode='RGB')
-                
-                # Convert to base64
-                img_bytes = io.BytesIO()
-                img_pil.save(img_bytes, format='PNG')
-                base64_data = base64.b64encode(img_bytes.getvalue()).decode('utf-8')
-                
-                # Calculate some basic metrics
-                img_array = np.array(img_pil)
-                brightness = np.mean(img_array) / 255.0
-                contrast = np.std(img_array) / 255.0
-                
-                generated_images.append({
-                    'image_index': i,
-                    'image_data': base64_data,
-                    'brightness': float(brightness),
-                    'contrast': float(contrast),
-                    'filename': f'generated_{i:03d}.png'
-                })
-            
-            metrics['num_images_generated'] = len(generated_images)
-            
-            # Calculate additional metrics
-            if len(generated_images) > 1:
-                brightness_values = [img['brightness'] for img in generated_images]
-                contrast_values = [img['contrast'] for img in generated_images]
-                
-                metrics['quality_metrics'] = {
-                    'avg_brightness': float(np.mean(brightness_values)),
-                    'std_brightness': float(np.std(brightness_values)),
-                    'avg_contrast': float(np.mean(contrast_values)),
-                    'std_contrast': float(np.std(contrast_values)),
-                    'diversity_score': float(np.std(brightness_values) + np.std(contrast_values))
-                }
-            
-            print('Successfully generated ' + str(len(generated_images)) + ' images')
-            
+                print(f'Generated {len(final_images)} evaluation samples')
         except Exception as e:
-            print('Error during image generation: ' + str(e))
-            metrics['generation_success'] = False
-            metrics['error'] = str(e)
+            print(f'Error generating samples: {e}')
         
-        # Get model information
+        # Calculate metrics from training history
+        metrics = {
+            'training_metrics': {},
+            'generation_metrics': {},
+            'model_info': model_info
+        }
+        
+        # Extract final training metrics
+        if training_history and isinstance(training_history, dict):
+            for key in ['d_loss', 'g_loss', 'real_score', 'fake_score']:
+                if key in training_history and training_history[key]:
+                    values = training_history[key]
+                    metrics['training_metrics'][f'final_{key}'] = values[-1] if values else 0
+                    metrics['training_metrics'][f'min_{key}'] = min(values) if values else 0
+                    metrics['training_metrics'][f'max_{key}'] = max(values) if values else 0
+                    metrics['training_metrics'][f'avg_{key}'] = sum(values)/len(values) if values else 0
+        
+        # Calculate stability metrics
+        if 'd_loss' in training_history and training_history['d_loss']:
+            d_losses = training_history['d_loss']
+            if len(d_losses) > 1:
+                # Loss convergence
+                last_quarter = d_losses[-len(d_losses)//4:]
+                first_quarter = d_losses[:len(d_losses)//4]
+                convergence = abs(sum(last_quarter)/len(last_quarter) - sum(first_quarter)/len(first_quarter))
+                metrics['training_metrics']['loss_convergence'] = convergence
+        
+        # Generation quality metrics
+        metrics['generation_metrics']['samples_generated'] = len(final_images)
+        metrics['generation_metrics']['sample_diversity'] = len(final_images) / sample_count if sample_count > 0 else 0
+        
+        # Model health metrics
         try:
-            metrics['model_parameters'] = {
-                'latent_dim': getattr(dcgan_model.config, 'latent_dim', 100),
-                'image_size': getattr(dcgan_model.config, 'image_size', 64),
-                'channels': getattr(dcgan_model.config, 'channels', 3),
-                'training_algorithm': getattr(dcgan_model.config, 'training_algorithm', 'backprop'),
-                'generator_params': sum(p.numel() for p in dcgan_model.generator.parameters()),
-                'discriminator_params': sum(p.numel() for p in dcgan_model.discriminator.parameters())
-            }
+            if hasattr(gan_model, 'generator'):
+                gen_params = sum(p.numel() for p in gan_model.generator.parameters())
+                metrics['model_info']['generator_params'] = gen_params
+            
+            if hasattr(gan_model, 'discriminator'):
+                disc_params = sum(p.numel() for p in gan_model.discriminator.parameters())
+                metrics['model_info']['discriminator_params'] = disc_params
         except:
-            metrics['model_parameters'] = {'error': 'Could not extract model parameters'}
+            pass
         
-        # Create evaluation report
-        report_lines = []
-        report_lines.append('DCGAN Evaluation Report')
-        report_lines.append('=' * 50)
-        report_lines.append('Model Information:')
-        report_lines.append(f"  Latent Dimension: {metrics['model_parameters'].get('latent_dim', 'N/A')}")
-        report_lines.append(f"  Image Size: {metrics['model_parameters'].get('image_size', 'N/A')}")
-        report_lines.append(f"  Channels: {metrics['model_parameters'].get('channels', 'N/A')}")
-        report_lines.append(f"  Training Algorithm: {metrics['model_parameters'].get('training_algorithm', 'N/A')}")
-        report_lines.append(f"  Generator Parameters: {metrics['model_parameters'].get('generator_params', 'N/A'):,}")
-        report_lines.append(f"  Discriminator Parameters: {metrics['model_parameters'].get('discriminator_params', 'N/A'):,}")
+        # Overall evaluation
+        final_d_loss = metrics['training_metrics'].get('final_d_loss', 1.0)
+        final_g_loss = metrics['training_metrics'].get('final_g_loss', 1.0)
         
-        report_lines.append('\\nGeneration Results:')
-        report_lines.append(f"  Success: {metrics['generation_success']}")
-        report_lines.append(f"  Images Generated: {metrics['num_images_generated']}")
+        # Calculate overall score (lower is better)
+        loss_score = (final_d_loss + final_g_loss) / 2
+        stability_score = metrics['training_metrics'].get('loss_convergence', 1.0)
         
-        if metrics['quality_metrics']:
-            report_lines.append('\\nQuality Metrics:')
-            report_lines.append(f"  Average Brightness: {metrics['quality_metrics'].get('avg_brightness', 0):.3f}")
-            report_lines.append(f"  Brightness Std: {metrics['quality_metrics'].get('std_brightness', 0):.3f}")
-            report_lines.append(f"  Average Contrast: {metrics['quality_metrics'].get('avg_contrast', 0):.3f}")
-            report_lines.append(f"  Contrast Std: {metrics['quality_metrics'].get('std_contrast', 0):.3f}")
-            report_lines.append(f"  Diversity Score: {metrics['quality_metrics'].get('diversity_score', 0):.3f}")
+        overall_score = (0.7 * loss_score + 0.3 * stability_score)
         
-        report_lines.append('\\nEvaluation Complete')
-        evaluation_report = '\\n'.join(report_lines)
+        metrics['overall_evaluation'] = {
+            'overall_score': overall_score,
+            'loss_score': loss_score,
+            'stability_score': stability_score,
+            'sample_quality': metrics['generation_metrics']['sample_diversity'],
+            'training_success': overall_score < 0.5,
+            'recommendation': 'GOOD' if overall_score < 0.3 else 'FAIR' if overall_score < 0.6 else 'POOR'
+        }
+        
+        # Create summary
+        summary = f'''{model_type.upper()} GAN Evaluation Summary:
+        • Model Type: {model_type}
+        • Training Algorithm: {model_info.get('training_algorithm', 'N/A')}
+        • Final D Loss: {final_d_loss:.4f}
+        • Final G Loss: {final_g_loss:.4f}
+        • Samples Generated: {len(final_images)}
+        • Overall Score: {overall_score:.3f} ({metrics['overall_evaluation']['recommendation']})
+        • Training Successful: {'✓' if metrics['overall_evaluation']['training_success'] else '✗'}
+        '''
+        
+        print(summary)
         
         # Save outputs
-        # Save metrics
-        output_dir_metrics = os.path.dirname(eval_metrics_path)
-        if output_dir_metrics and not os.path.exists(output_dir_metrics):
-            os.makedirs(output_dir_metrics, exist_ok=True)
+        output_dir = os.path.dirname(eval_results_path)
+        if output_dir and not os.path.exists(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
         
-        with open(eval_metrics_path, 'w') as f:
+        with open(eval_results_path, 'w') as f:
             json.dump(metrics, f, indent=2)
         
-        # Save generated images
-        output_dir_images = os.path.dirname(generated_images_path)
-        if output_dir_images and not os.path.exists(output_dir_images):
-            os.makedirs(output_dir_images, exist_ok=True)
+        with open(final_images_path, 'wb') as f:
+            pickle.dump(final_images, f)
         
-        with open(generated_images_path, 'wb') as f:
-            pickle.dump(generated_images, f)
+        with open(metrics_summary_path, 'w') as f:
+            f.write(summary)
         
-        # Save evaluation report
-        output_dir_report = os.path.dirname(evaluation_report_path)
-        if output_dir_report and not os.path.exists(output_dir_report):
-            os.makedirs(output_dir_report, exist_ok=True)
-        
-        with open(evaluation_report_path, 'w') as f:
-            f.write(evaluation_report)
-        
-        print('Evaluation Complete')
-        print('Saved metrics to: ' + eval_metrics_path)
-        print('Saved ' + str(len(generated_images)) + ' images to: ' + generated_images_path)
-        print('\\n' + evaluation_report)
-        " "$0" "$1" "$2" "$3" "$4" "$5" "$6"
+        print('GAN Evaluation Complete!')
+        print(f'Results saved to: {eval_results_path}')
+        " "$0" "$1" "$2" "$3" "$4" "$5" "$6" "$7"
     args:
       - {inputPath: trained_model}
       - {inputPath: test_data}
-      - {inputValue: config}
-      - {outputPath: eval_metrics}
-      - {outputPath: generated_images}
-      - {outputPath: evaluation_report}
+      - {inputPath: training_history}
+      - {inputValue: eval_config}
+      - {outputPath: eval_results}
+      - {outputPath: final_images}
+      - {outputPath: metrics_summary}
