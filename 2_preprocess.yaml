@@ -10,6 +10,7 @@ inputs:
     description: "Data configuration from LoadDataset"
   - name: model_config
     type: String
+    default: "{\"model_type\": \"dcgan\"}"
     description: "GAN model configuration (dcgan or vanilla_gan)"
 outputs:
   - name: processed_data
@@ -24,6 +25,11 @@ implementation:
       - sh
       - -c
       - |
+        # Install required dependencies first
+        pip install torch torchvision pillow numpy --quiet
+        echo "Dependencies installed successfully"
+        
+        # Then run the Python script
         python -c "
         import sys, os, pickle, json, base64, io, math
         import numpy as np
