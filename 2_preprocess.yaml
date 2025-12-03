@@ -20,7 +20,7 @@ outputs:
     description: "GAN configuration for next step"
 implementation:
   container:
-    image: nikhilv215/nesy-factory:v22
+    image: gurpreetgandhi/nesy-factory:v33
     command:
       - sh
       - -c
