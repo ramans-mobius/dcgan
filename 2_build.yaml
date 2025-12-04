@@ -1,4 +1,4 @@
-name: Initialize GAN Model
+name: 2 Initialize GAN Model
 description: Initializes either DCGAN or Vanilla GAN based on configuration.
 inputs:
   - name: gan_config
@@ -18,6 +18,8 @@ implementation:
       - sh
       - -c
       - |
+        # Install torchvision first
+        pip install torchvision --quiet
         exec "$0" "$@"
       - python3
       - -u
