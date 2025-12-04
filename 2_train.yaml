@@ -1,4 +1,4 @@
-name: Train GAN Model
+name: 2 Train GAN Model
 description: Trains either DCGAN or Vanilla GAN based on model type.
 inputs:
   - name: model
@@ -31,7 +31,7 @@ implementation:
       - -u
       - -c
       - |
-        import sys, os, pickle, json, base64, io, math
+        import sys, os, pickle, json, base64, io, math, argparse
         import torch
         import torchvision.transforms as transforms
         from torch.utils.data import DataLoader
