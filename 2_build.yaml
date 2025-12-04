@@ -10,6 +10,7 @@ outputs:
   - name: init_config
     type: String
     description: "Initialization configuration"
+
 implementation:
   container:
     image: gurpreetgandhi/nesy-factory:v33
@@ -17,25 +18,26 @@ implementation:
       - sh
       - -c
       - |
-        # Install dependencies and fix torch version
-        pip uninstall -y nesy-factory xformers --quiet 2>/dev/null || true
-        pip install torch==2.9.0 torchvision --quiet
-        echo "Dependencies installed for GAN initialization"
+        exec "$0" "$@"
+      - python3
+      - -u
+      - -c
+      - |
+        import sys, os, pickle, json, torch, argparse
         
-        python -c "
-        import sys, os, pickle, json, torch
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--gan_config', type=str, required=True)
+        parser.add_argument('--model_path', type=str, required=True)
+        parser.add_argument('--init_config_path', type=str, required=True)
+        args = parser.parse_args()
         
         print('Starting GAN Model Initialization')
         
-        # Parse arguments
-        gan_config_str = sys.argv[1]
-        model_path = sys.argv[2]
-        init_config_path = sys.argv[3]
-        
-        print(f'GAN config received, length: {len(gan_config_str)}')
-        print(f'GAN Config: {gan_config_str}...')
-        
         # Parse GAN configuration
+        gan_config_str = args.gan_config
+        print(f'GAN config received, length: {len(gan_config_str)}')
+        print(f'GAN Config preview: {gan_config_str[:100]}...')
+        
         try:
             # Try direct JSON parsing
             gan_config = json.loads(gan_config_str)
@@ -46,10 +48,10 @@ implementation:
             try:
                 cleaned = gan_config_str.strip()
                 # Remove extra quotes if present
-                if cleaned.startswith('\"') and cleaned.endswith('\"'):
+                if cleaned.startswith('"') and cleaned.endswith('"'):
                     cleaned = cleaned[1:-1]
                 # Unescape JSON
-                cleaned = cleaned.replace('\\\\\"', '\"').replace('\\\"', '\"')
+                cleaned = cleaned.replace('\\"', '"').replace('\\\\"', '"')
                 gan_config = json.loads(cleaned)
                 print('Parsed after cleaning')
             except Exception as e2:
@@ -78,10 +80,10 @@ implementation:
             gan_config['model_type'] = 'dcgan'
         
         print(f'{model_type.upper()} Configuration:')
-        print(f'  Image Size: {gan_config.get(\"image_size\", 64)}')
-        print(f'  Channels: {gan_config.get(\"channels\", 3)}')
-        print(f'  Latent Dim: {gan_config.get(\"latent_dim\", 100)}')
-        print(f'  Training Algorithm: {gan_config.get(\"training_algorithm\", \"backprop\")}')
+        print(f'  Image Size: {gan_config.get("image_size", 64)}')
+        print(f'  Channels: {gan_config.get("channels", 3)}')
+        print(f'  Latent Dim: {gan_config.get("latent_dim", 100)}')
+        print(f'  Training Algorithm: {gan_config.get("training_algorithm", "backprop")}')
         
         # Try to import GAN modules
         dcgan_available = False
@@ -231,13 +233,13 @@ implementation:
             print(f'Created mock {model_type.upper()} model')
         
         # Save model
-        output_dir = os.path.dirname(model_path)
+        output_dir = os.path.dirname(args.model_path)
         if output_dir and not os.path.exists(output_dir):
             os.makedirs(output_dir, exist_ok=True)
         
-        with open(model_path, 'wb') as f:
+        with open(args.model_path, 'wb') as f:
             pickle.dump(gan_model, f)
-        print(f'Model saved to: {model_path}')
+        print(f'Model saved to: {args.model_path}')
         
         # Save initialization config
         init_config = {
@@ -248,19 +250,22 @@ implementation:
             'original_config': gan_config
         }
         
-        output_dir_config = os.path.dirname(init_config_path)
+        output_dir_config = os.path.dirname(args.init_config_path)
         if output_dir_config and not os.path.exists(output_dir_config):
             os.makedirs(output_dir_config, exist_ok=True)
         
-        with open(init_config_path, 'w') as f:
+        with open(args.init_config_path, 'w') as f:
             json.dump(init_config, f, indent=2)
-        print(f'Init config saved to: {init_config_path}')
+        print(f'Init config saved to: {args.init_config_path}')
         
         print(f'{model_type.upper()} Model Initialization Complete')
         print(f'Model type: {model_type}')
         print(f'Model created: {gan_model is not None}')
-        " "$0" "$1" "$2" "$3"
+
     args:
+      - --gan_config
       - {inputValue: gan_config}
+      - --model_path
       - {outputPath: model}
+      - --init_config_path
       - {outputPath: init_config}
