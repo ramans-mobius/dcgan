@@ -27,12 +27,14 @@ implementation:
       - sh
       - -c
       - |
-        # Install comprehensive dependencies
-        pip install torch torchvision pillow numpy scipy scikit-learn --quiet
-        echo "Dependencies installed"
-        
-        python -c "
-        import sys, os, pickle, json, base64, io, math, time, warnings
+        # Install torchvision compatible with nesy-factory
+        pip install torchvision==0.15.2 scipy scikit-learn --no-deps --quiet
+        exec "$0" "$@"
+      - python3
+      - -u
+      - -c
+      - |
+        import sys, os, pickle, json, base64, io, math, time, warnings, argparse
         import numpy as np
         import torch
         from torch.utils.data import DataLoader
@@ -42,35 +44,34 @@ implementation:
         from sklearn.neighbors import NearestNeighbors
         warnings.filterwarnings('ignore')
         
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--trained_model_path', type=str, required=True)
+        parser.add_argument('--test_data_path', type=str, required=True)
+        parser.add_argument('--training_history_str', type=str, required=True)
+        parser.add_argument('--eval_config_str', type=str, required=True)
+        parser.add_argument('--eval_results_path', type=str, required=True)
+        parser.add_argument('--final_images_path', type=str, required=True)
+        parser.add_argument('--metrics_summary_path', type=str, required=True)
+        args = parser.parse_args()
+        
         print('Starting Comprehensive GAN Evaluation')
         
-        # Parse arguments
-        trained_model_path = sys.argv[1]
-        test_data_path = sys.argv[2]
-        training_history_str = sys.argv[3]
-        eval_config_str = sys.argv[4]
-        eval_results_path = sys.argv[5]
-        final_images_path = sys.argv[6]
-        metrics_summary_path = sys.argv[7]
-        
-        print('Loading model and data...')
-        
         # Load trained model
-        with open(trained_model_path, 'rb') as f:
+        with open(args.trained_model_path, 'rb') as f:
             gan_model = pickle.load(f)
         
         # Load test data
-        with open(test_data_path, 'rb') as f:
+        with open(args.test_data_path, 'rb') as f:
             test_data_wrapper = pickle.load(f)
         
         # Parse configs
         try:
-            training_history = json.loads(training_history_str)
+            training_history = json.loads(args.training_history_str)
         except:
             training_history = {}
         
         try:
-            eval_config = json.loads(eval_config_str)
+            eval_config = json.loads(args.eval_config_str)
         except:
             eval_config = {}
         
@@ -154,8 +155,6 @@ implementation:
                 
                 # Get latent dimension
                 latent_dim = model_info.get('latent_dim', 100)
-                image_size = model_info.get('image_size', 64)
-                channels = model_info.get('channels', 3)
                 
                 # Generate noise
                 gan_model.generator.eval()
@@ -451,83 +450,95 @@ implementation:
         }
         
         # 8. Create comprehensive text summary
-        summary = '=' * 70 + '\\n'
-        summary += f'{model_type.upper()} GAN COMPREHENSIVE EVALUATION REPORT\\n'
-        summary += '=' * 70 + '\\n\\n'
-        
-        summary += f'Generated: {model_info[\"evaluation_time\"]}\\n'
-        summary += f'Model Type: {model_type}\\n'
-        summary += f'Training Algorithm: {model_info.get(\"training_algorithm\", \"N/A\")}\\n'
-        summary += f'Image Size: {model_info.get(\"image_size\", \"N/A\")}\\n'
-        summary += f'Latent Dimension: {model_info.get(\"latent_dim\", \"N/A\")}\\n\\n'
-        
-        summary += 'TRAINING METRICS:\\n'
-        summary += f'  Final D Loss: {metrics[\"training_metrics\"].get(\"final_d_loss\", \"N/A\")}\\n'
-        summary += f'  Final G Loss: {metrics[\"training_metrics\"].get(\"final_g_loss\", \"N/A\")}\\n'
-        summary += f'  Loss Convergence: {metrics[\"training_metrics\"].get(\"loss_convergence\", \"N/A\")}\\n\\n'
-        
-        summary += 'GENERATION METRICS:\\n'
-        summary += f'  Samples Generated: {metrics[\"generation_metrics\"][\"samples_generated\"]}\\n'
-        summary += f'  Success Rate: {metrics[\"generation_metrics\"][\"generation_success_rate\"]:.1%}\\n\\n'
-        
-        summary += 'QUALITY METRICS:\\n'
-        summary += f'  Pixel Mean: {metrics[\"quality_metrics\"].get(\"pixel_mean\", \"N/A\"):.4f}\\n'
-        summary += f'  Contrast: {metrics[\"quality_metrics\"].get(\"contrast_mean\", \"N/A\"):.4f}\\n'
-        summary += f'  Simplified FID: {metrics[\"quality_metrics\"].get(\"simplified_fid\", \"N/A\"):.2f}\\n\\n'
-        
-        summary += 'DIVERSITY METRICS:\\n'
-        summary += f'  Intra-sample Distance: {metrics[\"diversity_metrics\"].get(\"intra_distance_mean\", \"N/A\"):.4f}\\n'
-        summary += f'  Coverage Estimate: {metrics[\"diversity_metrics\"].get(\"coverage_estimate\", \"N/A\"):.1%}\\n\\n'
+        summary_lines = []
+        summary_lines.append('=' * 70)
+        summary_lines.append(f'{model_type.upper()} GAN COMPREHENSIVE EVALUATION REPORT')
+        summary_lines.append('=' * 70)
+        summary_lines.append('')
+        summary_lines.append(f'Generated: {model_info["evaluation_time"]}')
+        summary_lines.append(f'Model Type: {model_type}')
+        summary_lines.append(f'Training Algorithm: {model_info.get("training_algorithm", "N/A")}')
+        summary_lines.append(f'Image Size: {model_info.get("image_size", "N/A")}')
+        summary_lines.append(f'Latent Dimension: {model_info.get("latent_dim", "N/A")}')
+        summary_lines.append('')
+        summary_lines.append('TRAINING METRICS:')
+        summary_lines.append(f'  Final D Loss: {metrics["training_metrics"].get("final_d_loss", "N/A")}')
+        summary_lines.append(f'  Final G Loss: {metrics["training_metrics"].get("final_g_loss", "N/A")}')
+        summary_lines.append(f'  Loss Convergence: {metrics["training_metrics"].get("loss_convergence", "N/A")}')
+        summary_lines.append('')
+        summary_lines.append('GENERATION METRICS:')
+        summary_lines.append(f'  Samples Generated: {metrics["generation_metrics"]["samples_generated"]}')
+        summary_lines.append(f'  Success Rate: {metrics["generation_metrics"]["generation_success_rate"]:.1%}')
+        summary_lines.append('')
+        summary_lines.append('QUALITY METRICS:')
+        summary_lines.append(f'  Pixel Mean: {metrics["quality_metrics"].get("pixel_mean", "N/A"):.4f}')
+        summary_lines.append(f'  Contrast: {metrics["quality_metrics"].get("contrast_mean", "N/A"):.4f}')
+        summary_lines.append(f'  Simplified FID: {metrics["quality_metrics"].get("simplified_fid", "N/A"):.2f}')
+        summary_lines.append('')
+        summary_lines.append('DIVERSITY METRICS:')
+        summary_lines.append(f'  Intra-sample Distance: {metrics["diversity_metrics"].get("intra_distance_mean", "N/A"):.4f}')
+        summary_lines.append(f'  Coverage Estimate: {metrics["diversity_metrics"].get("coverage_estimate", "N/A"):.1%}')
+        summary_lines.append('')
         
         if metrics['classification_metrics']:
-            summary += 'CLASSIFICATION METRICS:\\n'
-            summary += f'  Accuracy: {metrics[\"classification_metrics\"].get(\"accuracy\", \"N/A\"):.3f}\\n'
-            summary += f'  Precision: {metrics[\"classification_metrics\"].get(\"precision\", \"N/A\"):.3f}\\n'
-            summary += f'  Recall: {metrics[\"classification_metrics\"].get(\"recall\", \"N/A\"):.3f}\\n'
-            summary += f'  F1 Score: {metrics[\"classification_metrics\"].get(\"f1_score\", \"N/A\"):.3f}\\n\\n'
+            summary_lines.append('CLASSIFICATION METRICS:')
+            summary_lines.append(f'  Accuracy: {metrics["classification_metrics"].get("accuracy", "N/A"):.3f}')
+            summary_lines.append(f'  Precision: {metrics["classification_metrics"].get("precision", "N/A"):.3f}')
+            summary_lines.append(f'  Recall: {metrics["classification_metrics"].get("recall", "N/A"):.3f}')
+            summary_lines.append(f'  F1 Score: {metrics["classification_metrics"].get("f1_score", "N/A"):.3f}')
+            summary_lines.append('')
         
-        summary += 'OVERALL SCORES:\\n'
-        summary += f'  Quality Score: {quality_score:.1f}/100\\n'
-        summary += f'  Diversity Score: {diversity_score:.1f}/100\\n'
-        summary += f'  Training Score: {training_score:.1f}/100\\n'
+        summary_lines.append('OVERALL SCORES:')
+        summary_lines.append(f'  Quality Score: {quality_score:.1f}/100')
+        summary_lines.append(f'  Diversity Score: {diversity_score:.1f}/100')
+        summary_lines.append(f'  Training Score: {training_score:.1f}/100')
         if classification_score > 0:
-            summary += f'  Classification Score: {classification_score:.1f}/100\\n'
-        summary += f'  OVERALL SCORE: {overall_score:.1f}/100 - {metrics[\"overall_scores\"][\"rating\"]}\\n\\n'
-        
-        summary += 'RECOMMENDATIONS:\\n'
+            summary_lines.append(f'  Classification Score: {classification_score:.1f}/100')
+        summary_lines.append(f'  OVERALL SCORE: {overall_score:.1f}/100 - {metrics["overall_scores"]["rating"]}')
+        summary_lines.append('')
+        summary_lines.append('RECOMMENDATIONS:')
         if overall_score >= 80:
-            summary += '  ✓ Model is excellent and ready for deployment\\n'
+            summary_lines.append('  ✓ Model is excellent and ready for deployment')
         elif overall_score >= 60:
-            summary += '  ⚠ Model is good but could be improved\\n'
+            summary_lines.append('  ⚠ Model is good but could be improved')
         else:
-            summary += '  ✗ Model needs significant improvement\\n'
+            summary_lines.append('  ✗ Model needs significant improvement')
+        summary_lines.append('')
+        summary_lines.append('=' * 70)
         
-        summary += '\\n' + '=' * 70
+        summary = '\n'.join(summary_lines)
         
         print(summary)
         
         # 9. Save all outputs
         print('Saving evaluation results...')
         
-        os.makedirs(os.path.dirname(eval_results_path) or '.', exist_ok=True)
-        with open(eval_results_path, 'w') as f:
+        os.makedirs(os.path.dirname(args.eval_results_path) or '.', exist_ok=True)
+        with open(args.eval_results_path, 'w') as f:
             json.dump(metrics, f, indent=2)
         
-        with open(final_images_path, 'wb') as f:
+        with open(args.final_images_path, 'wb') as f:
             pickle.dump(final_images, f)
         
-        with open(metrics_summary_path, 'w') as f:
+        with open(args.metrics_summary_path, 'w') as f:
             f.write(summary)
         
         print('Comprehensive GAN Evaluation Complete!')
-        print(f'Results saved to: {eval_results_path}')
+        print(f'Results saved to: {args.eval_results_path}')
         print(f'Generated {len(final_images)} images for CDN upload')
-        " "$0" "$1" "$2" "$3" "$4" "$5" "$6" "$7"
+
     args:
+      - --trained_model_path
       - {inputPath: trained_model}
+      - --test_data_path
       - {inputPath: test_data}
+      - --training_history_str
       - {inputPath: training_history}
+      - --eval_config_str
       - {inputValue: eval_config}
+      - --eval_results_path
       - {outputPath: eval_results}
+      - --final_images_path
       - {outputPath: final_images}
+      - --metrics_summary_path
       - {outputPath: metrics_summary}
