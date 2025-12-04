@@ -1,4 +1,4 @@
-name: 2 Initialize GAN Model
+name: Initialize GAN Model
 description: Initializes either DCGAN or Vanilla GAN based on configuration.
 inputs:
   - name: gan_config
@@ -18,26 +18,6 @@ implementation:
       - sh
       - -c
       - |
-        # Install dependencies and fix torch version
-        echo "Installing dependencies..."
-        pip uninstall -y nesy-factory xformers --quiet 2>/dev/null || true
-        pip install torch==2.9.0 torchvision==0.14.0 --index-url https://download.pytorch.org/whl/cpu --quiet
-        
-        # Reinstall nesy-factory to ensure GANs module is available
-        echo "Checking nesy-factory installation..."
-        pip install --no-deps nesy-factory --quiet 2>/dev/null || true
-        
-        # Check if GANs directory exists
-        if [ -d "/usr/local/lib/python3.10/site-packages/nesy_factory/GANs" ]; then
-            echo " GANs directory found in nesy_factory"
-            ls -la /usr/local/lib/python3.10/site-packages/nesy_factory/GANs/
-        else
-            echo " GANs directory not found, checking for alternative locations..."
-            find /usr/local/lib/python3.10/site-packages/nesy_factory -name "*gan*" -type f | head -20
-        fi
-        
-        echo "Dependencies installed for GAN initialization"
-        
         exec "$0" "$@"
       - python3
       - -u
@@ -59,18 +39,14 @@ implementation:
         print(f'GAN Config preview: {gan_config_str[:100]}...')
         
         try:
-            # Try direct JSON parsing
             gan_config = json.loads(gan_config_str)
             print('Direct JSON parse successful')
         except json.JSONDecodeError as e:
             print(f'JSON parse error: {e}')
-            # Try cleaning - might be double-encoded
             try:
                 cleaned = gan_config_str.strip()
-                # Remove extra quotes if present
                 if cleaned.startswith('"') and cleaned.endswith('"'):
                     cleaned = cleaned[1:-1]
-                # Unescape JSON
                 cleaned = cleaned.replace('\\"', '"').replace('\\\\"', '"')
                 gan_config = json.loads(cleaned)
                 print('Parsed after cleaning')
@@ -92,84 +68,19 @@ implementation:
         print(f'  Latent Dim: {gan_config.get("latent_dim", 100)}')
         print(f'  Training Algorithm: {gan_config.get("training_algorithm", "backprop")}')
         
-        # Debug import paths
-        print("=== Debugging Imports ===")
-        import nesy_factory
-        print(f"nesy_factory location: {nesy_factory.__file__}")
-        
-        # Check what's in nesy_factory
-        nesy_path = os.path.dirname(nesy_factory.__file__)
-        print(f"Contents of {nesy_path}:")
-        if os.path.exists(nesy_path):
-            for item in os.listdir(nesy_path):
-                print(f"  - {item}")
-        
-        # Try to import GAN modules from multiple locations
-        print("=== Importing GAN Modules ===")
-        
+        # Import GAN models based on type
         gan_model = None
         
         if is_dcgan:
-            print("Attempting to import DCGAN...")
-            
-            # Try different import paths
-            import_paths = [
-                "nesy_factory.GANs.dcgan",
-                "nesy_factory.GANs",
-                "GANs.dcgan",
-                "GANs"
-            ]
-            
-            for import_path in import_paths:
-                try:
-                    print(f"Trying: from {import_path} import DCGAN, DCGANConfig")
-                    exec(f"from {import_path} import DCGAN, DCGANConfig")
-                    print(f" Successfully imported from {import_path}")
-                    dcgan_available = True
-                    break
-                except ImportError as e:
-                    print(f"   {import_path}: {e}")
-                    dcgan_available = False
-                except Exception as e:
-                    print(f"   {import_path}: {type(e).__name__}: {e}")
-                    dcwan_available = False
-            
-            if not dcgan_available:
-                print("=== Direct Module Check ===")
-                # Try to find and import the module directly
-                try:
-                    import importlib.util
-                    dcgan_path = os.path.join(nesy_path, 'GANs', 'dcgan.py')
-                    if os.path.exists(dcgan_path):
-                        print(f"Found DCGAN at: {dcgan_path}")
-                        spec = importlib.util.spec_from_file_location("dcgan", dcgan_path)
-                        dcgan_module = importlib.util.module_from_spec(spec)
-                        sys.modules["dcgan"] = dcgan_module
-                        spec.loader.exec_module(dcgan_module)
-                        from dcgan import DCGAN, DCGANConfig
-                        print(" Successfully loaded DCGAN directly from file")
-                        dcgan_available = True
-                    else:
-                        print(f"DCGAN file not found at: {dcgan_path}")
-                except Exception as e:
-                    print(f"Direct load failed: {e}")
-            
-            if not dcgan_available:
-                # List all available modules in GANs
-                gans_path = os.path.join(nesy_path, 'GANs')
-                if os.path.exists(gans_path):
-                    print(f"Contents of {gans_path}:")
-                    for item in os.listdir(gans_path):
-                        item_path = os.path.join(gans_path, item)
-                        if os.path.isfile(item_path):
-                            print(f"  File: {item}")
-                        elif os.path.isdir(item_path):
-                            print(f"  Directory: {item}")
-                
-                raise ImportError("DCGAN module not available. Check installation and paths.")
+            print('Importing DCGAN...')
+            try:
+                from nesy_factory.GANs.dcgan import DCGAN, DCGANConfig
+                print('DCGAN imported successfully')
+            except ImportError as e:
+                print(f'DCGAN import error: {e}')
+                raise
             
             print('Creating DCGAN model...')
-            # DCGAN configuration
             dcgan_config_dict = {
                 'image_size': gan_config.get('image_size', 64),
                 'channels': gan_config.get('channels', 3),
@@ -184,23 +95,18 @@ implementation:
                 'device': 'cuda' if torch.cuda.is_available() else 'cpu'
             }
             
-            # Add generator layers if specified
             if 'generator_layers' in gan_config and gan_config['generator_layers']:
                 dcgan_config_dict['generator_layers'] = gan_config['generator_layers']
             
-            # Add discriminator layers if specified
             if 'discriminator_layers' in gan_config and gan_config['discriminator_layers']:
                 dcgan_config_dict['discriminator_layers'] = gan_config['discriminator_layers']
             
             print(f'DCGAN config: {dcgan_config_dict}')
             
             try:
-                # Try creating the config
-                print("Creating DCGANConfig...")
                 dcgan_config = DCGANConfig(**dcgan_config_dict)
-                print("Creating DCGAN instance...")
                 gan_model = DCGAN(dcgan_config)
-                print(' DCGAN model created successfully')
+                print('DCGAN model created successfully')
             except Exception as e:
                 print(f'Error creating DCGAN: {e}')
                 import traceback
@@ -208,33 +114,15 @@ implementation:
                 raise
         
         elif is_vanilla_gan:
-            print("Attempting to import VanillaGAN...")
-            
-            # Try different import paths for VanillaGAN
-            import_paths = [
-                "nesy_factory.GANs.vanilla_gan",
-                "GANs.vanilla_gan",
-            ]
-            
-            for import_path in import_paths:
-                try:
-                    print(f"Trying: from {import_path} import VanillaGAN, VanillaGANConfig")
-                    exec(f"from {import_path} import VanillaGAN, VanillaGANConfig")
-                    print(f" Successfully imported from {import_path}")
-                    vanilla_gan_available = True
-                    break
-                except ImportError as e:
-                    print(f"   {import_path}: {e}")
-                    vanilla_gan_available = False
-                except Exception as e:
-                    print(f"   {import_path}: {type(e).__name__}: {e}")
-                    vanilla_gan_available = False
-            
-            if not vanilla_gan_available:
-                raise ImportError("VanillaGAN module not available.")
+            print('Importing VanillaGAN...')
+            try:
+                from nesy_factory.GANs.vanilla_gan import VanillaGAN, VanillaGANConfig
+                print('VanillaGAN imported successfully')
+            except ImportError as e:
+                print(f'VanillaGAN import error: {e}')
+                raise
             
             print('Creating Vanilla GAN model...')
-            # Vanilla GAN configuration
             vanilla_config_dict = {
                 'input_dim': gan_config.get('input_dim', 784),
                 'latent_dim': gan_config.get('latent_dim', 100),
@@ -254,7 +142,7 @@ implementation:
             try:
                 vanilla_config = VanillaGANConfig(**vanilla_config_dict)
                 gan_model = VanillaGAN(vanilla_config)
-                print(' Vanilla GAN model created successfully')
+                print('Vanilla GAN model created successfully')
             except Exception as e:
                 print(f'Error creating Vanilla GAN: {e}')
                 import traceback
@@ -290,7 +178,7 @@ implementation:
             json.dump(init_config, f, indent=2)
         print(f'Init config saved to: {args.init_config_path}')
         
-        print(f' {model_type.upper()} Model Initialization Complete')
+        print(f'{model_type.upper()} Model Initialization Complete')
         print(f'Model type: {model_type}')
         print(f'Model class: {type(gan_model).__name__}')
         print(f'Model created successfully')
