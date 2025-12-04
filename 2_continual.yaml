@@ -25,46 +25,57 @@ implementation:
       - sh
       - -c
       - |
-        # Install dependencies
-        pip install torch torchvision pillow numpy --quiet
-        echo "Dependencies installed"
-        
-        python -c "
-        import sys, os, pickle, json, copy, time
+        # Install torchvision compatible with nesy-factory
+        pip install torchvision==0.15.2 --no-deps --quiet
+        exec "$0" "$@"
+      - python3
+      - -u
+      - -c
+      - |
+        import sys, os, pickle, json, copy, time, argparse
         import torch
         from torch.utils.data import DataLoader
         import numpy as np
         
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--base_model_path', type=str, required=True)
+        parser.add_argument('--cl_tasks_path', type=str, required=True)
+        parser.add_argument('--finetune_config_str', type=str, required=True)
+        parser.add_argument('--finetuned_models_path', type=str, required=True)
+        parser.add_argument('--cl_history_path', type=str, required=True)
+        parser.add_argument('--consolidated_model_path', type=str, required=True)
+        args = parser.parse_args()
+        
         print('Starting GAN Continual Learning Finetuning')
         
-        # Parse arguments
-        base_model_path = sys.argv[1]
-        cl_tasks_path = sys.argv[2]
-        finetune_config_str = sys.argv[3]
-        finetuned_models_path = sys.argv[4]
-        cl_history_path = sys.argv[5]
-        consolidated_model_path = sys.argv[6]
-        
         # Load base model
-        with open(base_model_path, 'rb') as f:
+        with open(args.base_model_path, 'rb') as f:
             base_model = pickle.load(f)
         
         # Load continual learning tasks
-        with open(cl_tasks_path, 'rb') as f:
+        with open(args.cl_tasks_path, 'rb') as f:
             cl_tasks = pickle.load(f)
         
         # Parse config
         try:
-            finetune_config = json.loads(finetune_config_str)
+            finetune_config = json.loads(args.finetune_config_str)
         except:
             finetune_config = {}
         
         print(f'Starting continual learning with {len(cl_tasks)} tasks')
         
+        # Determine model type
+        model_type = 'dcgan'
+        if hasattr(base_model, 'config'):
+            if hasattr(base_model.config, 'model_type'):
+                model_type = base_model.config.model_type
+            elif hasattr(base_model.config, 'input_dim'):
+                model_type = 'vanilla_gan'
+        
         # Training history
         cl_history = {
             'tasks': [],
-            'model_type': getattr(base_model.config, 'model_type', 'dcgan') if hasattr(base_model, 'config') else 'unknown',
+            'model_type': model_type,
             'training_algo': getattr(base_model.config, 'training_algorithm', 'backprop') if hasattr(base_model, 'config') else 'backprop'
         }
         
@@ -80,7 +91,7 @@ implementation:
             task_config = task_data.get('config', {})
             
             print(f'=== Task {task_id+1}/{len(cl_tasks)} ===')
-            print(f'Description: {task_data.get(\"description\", \"No description\")}')
+            print(f'Description: {task_data.get("description", "No description")}')
             print(f'Samples: {len(task_dataset)}')
             
             # Create dataloader for this task
@@ -184,27 +195,33 @@ implementation:
         consolidated_model = copy.deepcopy(current_model)
         
         # Save outputs
-        os.makedirs(os.path.dirname(finetuned_models_path) or '.', exist_ok=True)
-        with open(finetuned_models_path, 'wb') as f:
+        os.makedirs(os.path.dirname(args.finetuned_models_path) or '.', exist_ok=True)
+        with open(args.finetuned_models_path, 'wb') as f:
             pickle.dump(finetuned_models, f)
         
-        os.makedirs(os.path.dirname(cl_history_path) or '.', exist_ok=True)
-        with open(cl_history_path, 'w') as f:
+        os.makedirs(os.path.dirname(args.cl_history_path) or '.', exist_ok=True)
+        with open(args.cl_history_path, 'w') as f:
             json.dump(cl_history, f, indent=2)
         
-        os.makedirs(os.path.dirname(consolidated_model_path) or '.', exist_ok=True)
-        with open(consolidated_model_path, 'wb') as f:
+        os.makedirs(os.path.dirname(args.consolidated_model_path) or '.', exist_ok=True)
+        with open(args.consolidated_model_path, 'wb') as f:
             pickle.dump(consolidated_model, f)
         
         print(f'Continual Learning Complete!')
         print(f'  Tasks processed: {len(cl_tasks)}')
         print(f'  Models saved: {len(finetuned_models)}')
-        print(f'  Final model saved to: {consolidated_model_path}')
-        " "$0" "$1" "$2" "$3" "$4" "$5" "$6"
+        print(f'  Final model saved to: {args.consolidated_model_path}')
+
     args:
+      - --base_model_path
       - {inputPath: base_model}
+      - --cl_tasks_path
       - {inputPath: cl_tasks}
+      - --finetune_config_str
       - {inputValue: finetune_config}
+      - --finetuned_models_path
       - {outputPath: finetuned_models}
+      - --cl_history_path
       - {outputPath: cl_history}
+      - --consolidated_model_path
       - {outputPath: consolidated_model}
