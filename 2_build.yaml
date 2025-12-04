@@ -1,4 +1,4 @@
-name: 2 Initialize GAN Model
+name: Initialize GAN Model
 description: Initializes either DCGAN or Vanilla GAN based on configuration.
 inputs:
   - name: gan_config
@@ -18,8 +18,10 @@ implementation:
       - sh
       - -c
       - |
-        # Install torchvision first
-        pip install torchvision --quiet
+        # Install torchvision compatible with nesy-factory requirements
+        # nesy-factory 1.0.0 requires torch<2.3.0,>=2.0.0
+        # So we install torchvision 0.15.2 which is compatible with torch 2.0.0-2.2.0
+        pip install torchvision==0.15.2 --no-deps --quiet
         exec "$0" "$@"
       - python3
       - -u
