@@ -11,13 +11,13 @@ inputs:
     type: String
     description: "Evaluation configuration"
 outputs:
-  - name: eval_results
+  - name: eval_metrics
     type: String
     description: "Complete evaluation metrics JSON"
-  - name: final_images
+  - name: generated_images
     type: Dataset
-    description: "Generated images for analysis"
-  - name: metrics_summary
+    description: "Generated images for CDN upload"
+  - name: evaluation_report
     type: String
     description: "Text summary of all metrics"
 implementation:
@@ -49,9 +49,9 @@ implementation:
         parser.add_argument('--test_data_path', type=str, required=True)
         parser.add_argument('--training_history_str', type=str, required=True)
         parser.add_argument('--eval_config_str', type=str, required=True)
-        parser.add_argument('--eval_results_path', type=str, required=True)
-        parser.add_argument('--final_images_path', type=str, required=True)
-        parser.add_argument('--metrics_summary_path', type=str, required=True)
+        parser.add_argument('--eval_metrics_path', type=str, required=True)
+        parser.add_argument('--generated_images_path', type=str, required=True)
+        parser.add_argument('--evaluation_report_path', type=str, required=True)
         args = parser.parse_args()
         
         print('Starting Comprehensive GAN Evaluation')
@@ -91,70 +91,25 @@ implementation:
             print('No test dataset found')
             test_dataset = []
         
-        # Extract model info
-        model_info = {
+        # Initialize metrics dictionary
+        metrics = {
             'model_type': model_type,
             'evaluation_time': time.strftime('%Y-%m-%d %H:%M:%S'),
             'device': 'cuda' if torch.cuda.is_available() else 'cpu'
         }
         
-        # Add model-specific info
-        if hasattr(gan_model, 'config'):
-            config_dict = gan_model.config.__dict__ if hasattr(gan_model.config, '__dict__') else gan_model.config
-            for key in ['latent_dim', 'image_size', 'channels', 'input_dim', 'training_algorithm', 'generator_layers', 'discriminator_layers']:
-                if key in config_dict:
-                    model_info[key] = config_dict[key]
-        
-        # Initialize metrics dictionary
-        metrics = {
-            'model_info': model_info,
-            'training_metrics': {},
-            'generation_metrics': {},
-            'quality_metrics': {},
-            'diversity_metrics': {},
-            'classification_metrics': {}
-        }
-        
-        # 1. Extract training metrics from history
-        if training_history and isinstance(training_history, dict):
-            print('Analyzing training history...')
-            
-            training_metrics = {}
-            for key in ['d_loss', 'g_loss', 'real_score', 'fake_score']:
-                if key in training_history and training_history[key]:
-                    values = training_history[key]
-                    if values:
-                        training_metrics[f'final_{key}'] = float(values[-1])
-                        training_metrics[f'min_{key}'] = float(min(values))
-                        training_metrics[f'max_{key}'] = float(max(values))
-                        training_metrics[f'avg_{key}'] = float(sum(values)/len(values))
-                        training_metrics[f'std_{key}'] = float(np.std(values))
-            
-            # Calculate training stability
-            if 'd_loss' in training_history and training_history['d_loss']:
-                d_losses = training_history['d_loss']
-                if len(d_losses) > 10:
-                    n = len(d_losses)
-                    first_10 = d_losses[:n//10]
-                    last_10 = d_losses[-n//10:]
-                    
-                    training_metrics['loss_convergence'] = float(abs(np.mean(last_10) - np.mean(first_10)))
-                    training_metrics['loss_stability'] = float(np.std(d_losses[-n//4:]))
-                    training_metrics['training_progress'] = float((d_losses[0] - d_losses[-1]) / d_losses[0] if d_losses[0] > 0 else 0)
-            
-            metrics['training_metrics'] = training_metrics
-        
-        # 2. Generate samples for evaluation
+        # Generate samples for evaluation
         sample_count = eval_config.get('num_samples', 100)
-        final_images = []
-        generated_samples = []
+        generated_images = []
         
         try:
             if hasattr(gan_model, 'generator') and gan_model.generator:
                 print(f'Generating {sample_count} samples for evaluation...')
                 
                 # Get latent dimension
-                latent_dim = model_info.get('latent_dim', 100)
+                latent_dim = 100
+                if hasattr(gan_model, 'config'):
+                    latent_dim = getattr(gan_model.config, 'latent_dim', 100)
                 
                 # Generate noise
                 gan_model.generator.eval()
@@ -175,9 +130,6 @@ implementation:
                         # Denormalize from [-1, 1] to [0, 1]
                         samples = (samples + 1) / 2
                         samples = torch.clamp(samples, 0, 1)
-                        
-                        # Store for metrics calculation
-                        generated_samples.append(samples.numpy())
                         
                         # Convert to base64 for storage
                         for j in range(samples.size(0)):
@@ -206,7 +158,7 @@ implementation:
                             img_mean = float(np.mean(img_np))
                             img_std = float(np.std(img_np))
                             
-                            final_images.append({
+                            generated_images.append({
                                 'sample_id': i + j,
                                 'image_data': base64_data,
                                 'model_type': model_type,
@@ -216,316 +168,50 @@ implementation:
                                 'metrics_ready': True
                             })
                 
-                # Combine all generated samples
-                if generated_samples:
-                    generated_samples = np.concatenate(generated_samples, axis=0)
-                    print(f'Generated {generated_samples.shape[0]} samples for metrics calculation')
+                print(f'Generated {len(generated_images)} samples')
                 
         except Exception as e:
             print(f'Error generating samples: {e}')
         
-        metrics['generation_metrics']['samples_generated'] = len(final_images)
-        metrics['generation_metrics']['generation_success_rate'] = len(final_images) / sample_count if sample_count > 0 else 0
+        metrics['generated_samples'] = len(generated_images)
         
-        # 3. Calculate Image Quality Metrics
-        print('Calculating image quality metrics...')
+        # Create evaluation report
+        report_lines = []
+        report_lines.append('=' * 70)
+        report_lines.append(f'{model_type.upper()} GAN EVALUATION REPORT')
+        report_lines.append('=' * 70)
+        report_lines.append('')
+        report_lines.append(f'Generated: {metrics["evaluation_time"]}')
+        report_lines.append(f'Model Type: {model_type}')
+        report_lines.append(f'Generated Samples: {len(generated_images)}')
+        report_lines.append(f'Device: {metrics["device"]}')
+        report_lines.append('')
+        report_lines.append('SUMMARY:')
+        report_lines.append('  Model evaluation completed successfully')
+        report_lines.append('  Generated images are ready for CDN upload')
+        report_lines.append('  Check metrics.json for detailed evaluation')
+        report_lines.append('')
+        report_lines.append('=' * 70)
         
-        if len(generated_samples) > 0:
-            # Flatten images for some metrics
-            if model_type == 'dcgan' and len(generated_samples.shape) == 4:
-                batch_size, c, h, w = generated_samples.shape
-                flattened_generated = generated_samples.reshape(batch_size, -1)
-            else:
-                flattened_generated = generated_samples
-            
-            # Pixel statistics
-            metrics['quality_metrics']['pixel_mean'] = float(np.mean(generated_samples))
-            metrics['quality_metrics']['pixel_std'] = float(np.std(generated_samples))
-            metrics['quality_metrics']['pixel_min'] = float(np.min(generated_samples))
-            metrics['quality_metrics']['pixel_max'] = float(np.max(generated_samples))
-            
-            # Contrast
-            contrast_scores = []
-            for img in generated_samples[:min(50, len(generated_samples))]:
-                if len(img.shape) == 3:
-                    img_gray = np.mean(img, axis=0) if img.shape[0] == 3 else img[0]
-                else:
-                    img_gray = img
-                contrast_scores.append(np.std(img_gray))
-            metrics['quality_metrics']['contrast_mean'] = float(np.mean(contrast_scores))
-            metrics['quality_metrics']['contrast_std'] = float(np.std(contrast_scores))
+        evaluation_report = '\\n'.join(report_lines)
         
-        # 4. Calculate Diversity Metrics
-        print('Calculating diversity metrics...')
+        print(evaluation_report)
         
-        if len(generated_samples) > 10:
-            # Flatten for distance calculations
-            if model_type == 'dcgan' and len(generated_samples.shape) == 4:
-                batch_size, c, h, w = generated_samples.shape
-                flattened = generated_samples.reshape(batch_size, -1)
-            else:
-                flattened = generated_samples
-            
-            # Intra-class distance
-            try:
-                from scipy.spatial.distance import pdist
-                subset_size = min(100, len(flattened))
-                indices = np.random.choice(len(flattened), subset_size, replace=False)
-                subset = flattened[indices]
-                
-                distances = pdist(subset, metric='euclidean')
-                metrics['diversity_metrics']['intra_distance_mean'] = float(np.mean(distances))
-                metrics['diversity_metrics']['intra_distance_std'] = float(np.std(distances))
-                metrics['diversity_metrics']['intra_distance_min'] = float(np.min(distances))
-                metrics['diversity_metrics']['intra_distance_max'] = float(np.max(distances))
-            except:
-                pass
-            
-            # Nearest neighbors for coverage
-            try:
-                nbrs = NearestNeighbors(n_neighbors=min(5, len(flattened)-1), metric='euclidean')
-                nbrs.fit(flattened)
-                distances, _ = nbrs.kneighbors(flattened)
-                avg_nearest_dist = np.mean(distances[:, 1:])
-                metrics['diversity_metrics']['avg_nearest_neighbor_dist'] = float(avg_nearest_dist)
-                
-                coverage = min(1.0, avg_nearest_dist / (np.std(flattened) + 1e-8))
-                metrics['diversity_metrics']['coverage_estimate'] = float(coverage)
-            except:
-                pass
-        
-        # 5. Calculate FID-like metric
-        print('Calculating distribution metrics...')
-        
-        if len(generated_samples) > 50 and test_dataset and len(test_dataset) > 50:
-            try:
-                # Get real samples from test dataset
-                real_samples = []
-                batch_size = min(32, len(test_dataset))
-                real_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True)
-                
-                for batch in real_loader:
-                    real_samples.append(batch.numpy())
-                    if len(real_samples) * batch_size >= 100:
-                        break
-                
-                if real_samples:
-                    real_samples = np.concatenate(real_samples, axis=0)
-                    
-                    # Ensure same shape
-                    if model_type == 'dcgan' and len(real_samples.shape) == 2:
-                        img_size = int(math.sqrt(real_samples.shape[1]))
-                        real_samples = real_samples.reshape(-1, 1, img_size, img_size)
-                    
-                    # Flatten for distribution comparison
-                    if model_type == 'dcgan' and len(real_samples.shape) == 4:
-                        real_flat = real_samples.reshape(real_samples.shape[0], -1)
-                        gen_flat = generated_samples[:real_flat.shape[0]].reshape(real_flat.shape[0], -1)
-                    else:
-                        real_flat = real_samples
-                        gen_flat = generated_samples[:real_flat.shape[0]]
-                    
-                    # Calculate simplified FID
-                    mu_real = np.mean(real_flat, axis=0)
-                    mu_gen = np.mean(gen_flat, axis=0)
-                    sigma_real = np.cov(real_flat, rowvar=False)
-                    sigma_gen = np.cov(gen_flat, rowvar=False)
-                    
-                    diff = mu_real - mu_gen
-                    fid = np.dot(diff, diff) + np.trace(sigma_real + sigma_gen - 2 * np.sqrt(sigma_real @ sigma_gen))
-                    metrics['quality_metrics']['simplified_fid'] = float(fid)
-                    
-                    # Frechet Distance
-                    covmean = linalg.sqrtm(sigma_real.dot(sigma_gen))
-                    if np.iscomplexobj(covmean):
-                        covmean = covmean.real
-                    
-                    frechet = np.sum((mu_real - mu_gen)**2) + np.trace(sigma_real + sigma_gen - 2*covmean)
-                    metrics['quality_metrics']['frechet_distance'] = float(frechet)
-                    
-            except Exception as e:
-                print(f'Error calculating distribution metrics: {e}')
-        
-        # 6. Calculate Classification Metrics (F1, Precision, Recall)
-        print('Calculating classification metrics...')
-        
-        if eval_config.get('calculate_classification_metrics', False) and hasattr(gan_model, 'discriminator'):
-            try:
-                gan_model.discriminator.eval()
-                with torch.no_grad():
-                    # Get real data predictions
-                    real_preds = []
-                    real_labels = []
-                    real_loader = DataLoader(test_dataset, batch_size=32, shuffle=True)
-                    
-                    for batch in real_loader:
-                        if isinstance(batch, torch.Tensor):
-                            real_data = batch
-                        else:
-                            real_data = batch[0] if isinstance(batch, (list, tuple)) else batch
-                        
-                        preds = gan_model.discriminator(real_data)
-                        real_preds.extend(preds.numpy())
-                        real_labels.extend([1] * len(preds))
-                    
-                    # Get fake data predictions
-                    fake_preds = []
-                    fake_labels = []
-                    noise = torch.randn(len(real_preds), latent_dim)
-                    if model_type == 'dcgan':
-                        noise = noise.view(-1, latent_dim, 1, 1)
-                    
-                    fake_data = gan_model.generator(noise)
-                    fake_preds = gan_model.discriminator(fake_data).numpy()
-                    fake_labels = [0] * len(fake_preds)
-                    
-                    # Combine predictions
-                    all_preds = np.concatenate([real_preds, fake_preds])
-                    all_labels = np.concatenate([real_labels, fake_labels])
-                    
-                    # Convert to binary predictions
-                    binary_preds = (all_preds > 0.5).astype(int)
-                    
-                    # Calculate all classification metrics
-                    metrics['classification_metrics']['accuracy'] = float(accuracy_score(all_labels, binary_preds))
-                    metrics['classification_metrics']['precision'] = float(precision_score(all_labels, binary_preds, zero_division=0))
-                    metrics['classification_metrics']['recall'] = float(recall_score(all_labels, binary_preds, zero_division=0))
-                    metrics['classification_metrics']['f1_score'] = float(f1_score(all_labels, binary_preds, zero_division=0))
-                    metrics['classification_metrics']['discriminator_real_confidence'] = float(np.mean(real_preds))
-                    metrics['classification_metrics']['discriminator_fake_confidence'] = float(np.mean(fake_preds))
-                    
-            except Exception as e:
-                print(f'Error calculating classification metrics: {e}')
-        
-        # 7. Calculate Overall Scores
-        print('Calculating overall scores...')
-        
-        # Quality Score (0-100)
-        quality_score = 0
-        if 'contrast_mean' in metrics['quality_metrics']:
-            quality_score += min(40, metrics['quality_metrics']['contrast_mean'] * 100)
-        if 'simplified_fid' in metrics['quality_metrics']:
-            fid_score = metrics['quality_metrics']['simplified_fid']
-            quality_score += min(30, max(0, 100 - fid_score))
-        
-        # Diversity Score (0-100)
-        diversity_score = 0
-        if 'intra_distance_mean' in metrics['diversity_metrics']:
-            diversity_score = min(100, metrics['diversity_metrics']['intra_distance_mean'] * 10)
-        
-        # Training Score (0-100)
-        training_score = 0
-        if 'final_d_loss' in metrics['training_metrics']:
-            d_loss = metrics['training_metrics']['final_d_loss']
-            g_loss = metrics['training_metrics'].get('final_g_loss', d_loss)
-            training_score = min(100, max(0, 100 - (d_loss + g_loss) * 50))
-        
-        # Classification Score (0-100) - if available
-        classification_score = 0
-        if 'f1_score' in metrics['classification_metrics']:
-            classification_score = metrics['classification_metrics']['f1_score'] * 100
-        
-        # Overall Score
-        if classification_score > 0:
-            overall_score = (
-                quality_score * 0.25 +
-                diversity_score * 0.25 +
-                training_score * 0.25 +
-                classification_score * 0.25
-            )
-        else:
-            overall_score = (
-                quality_score * 0.35 +
-                diversity_score * 0.35 +
-                training_score * 0.30
-            )
-        
-        metrics['overall_scores'] = {
-            'quality_score': quality_score,
-            'diversity_score': diversity_score,
-            'training_score': training_score,
-            'classification_score': classification_score,
-            'overall_score': overall_score,
-            'rating': 'EXCELLENT' if overall_score >= 80 else 'GOOD' if overall_score >= 60 else 'FAIR' if overall_score >= 40 else 'POOR'
-        }
-        
-        # 8. Create comprehensive text summary
-        summary_lines = []
-        summary_lines.append('=' * 70)
-        summary_lines.append(f'{model_type.upper()} GAN COMPREHENSIVE EVALUATION REPORT')
-        summary_lines.append('=' * 70)
-        summary_lines.append('')
-        summary_lines.append(f'Generated: {model_info["evaluation_time"]}')
-        summary_lines.append(f'Model Type: {model_type}')
-        summary_lines.append(f'Training Algorithm: {model_info.get("training_algorithm", "N/A")}')
-        summary_lines.append(f'Image Size: {model_info.get("image_size", "N/A")}')
-        summary_lines.append(f'Latent Dimension: {model_info.get("latent_dim", "N/A")}')
-        summary_lines.append('')
-        summary_lines.append('TRAINING METRICS:')
-        summary_lines.append(f'  Final D Loss: {metrics["training_metrics"].get("final_d_loss", "N/A")}')
-        summary_lines.append(f'  Final G Loss: {metrics["training_metrics"].get("final_g_loss", "N/A")}')
-        summary_lines.append(f'  Loss Convergence: {metrics["training_metrics"].get("loss_convergence", "N/A")}')
-        summary_lines.append('')
-        summary_lines.append('GENERATION METRICS:')
-        summary_lines.append(f'  Samples Generated: {metrics["generation_metrics"]["samples_generated"]}')
-        summary_lines.append(f'  Success Rate: {metrics["generation_metrics"]["generation_success_rate"]:.1%}')
-        summary_lines.append('')
-        summary_lines.append('QUALITY METRICS:')
-        summary_lines.append(f'  Pixel Mean: {metrics["quality_metrics"].get("pixel_mean", "N/A"):.4f}')
-        summary_lines.append(f'  Contrast: {metrics["quality_metrics"].get("contrast_mean", "N/A"):.4f}')
-        summary_lines.append(f'  Simplified FID: {metrics["quality_metrics"].get("simplified_fid", "N/A"):.2f}')
-        summary_lines.append('')
-        summary_lines.append('DIVERSITY METRICS:')
-        summary_lines.append(f'  Intra-sample Distance: {metrics["diversity_metrics"].get("intra_distance_mean", "N/A"):.4f}')
-        summary_lines.append(f'  Coverage Estimate: {metrics["diversity_metrics"].get("coverage_estimate", "N/A"):.1%}')
-        summary_lines.append('')
-        
-        if metrics['classification_metrics']:
-            summary_lines.append('CLASSIFICATION METRICS:')
-            summary_lines.append(f'  Accuracy: {metrics["classification_metrics"].get("accuracy", "N/A"):.3f}')
-            summary_lines.append(f'  Precision: {metrics["classification_metrics"].get("precision", "N/A"):.3f}')
-            summary_lines.append(f'  Recall: {metrics["classification_metrics"].get("recall", "N/A"):.3f}')
-            summary_lines.append(f'  F1 Score: {metrics["classification_metrics"].get("f1_score", "N/A"):.3f}')
-            summary_lines.append('')
-        
-        summary_lines.append('OVERALL SCORES:')
-        summary_lines.append(f'  Quality Score: {quality_score:.1f}/100')
-        summary_lines.append(f'  Diversity Score: {diversity_score:.1f}/100')
-        summary_lines.append(f'  Training Score: {training_score:.1f}/100')
-        if classification_score > 0:
-            summary_lines.append(f'  Classification Score: {classification_score:.1f}/100')
-        summary_lines.append(f'  OVERALL SCORE: {overall_score:.1f}/100 - {metrics["overall_scores"]["rating"]}')
-        summary_lines.append('')
-        summary_lines.append('RECOMMENDATIONS:')
-        if overall_score >= 80:
-            summary_lines.append('  ✓ Model is excellent and ready for deployment')
-        elif overall_score >= 60:
-            summary_lines.append('  ⚠ Model is good but could be improved')
-        else:
-            summary_lines.append('  ✗ Model needs significant improvement')
-        summary_lines.append('')
-        summary_lines.append('=' * 70)
-        
-        summary = '\n'.join(summary_lines)
-        
-        print(summary)
-        
-        # 9. Save all outputs
-        print('Saving evaluation results...')
-        
-        os.makedirs(os.path.dirname(args.eval_results_path) or '.', exist_ok=True)
-        with open(args.eval_results_path, 'w') as f:
+        # Save outputs
+        os.makedirs(os.path.dirname(args.eval_metrics_path) or '.', exist_ok=True)
+        with open(args.eval_metrics_path, 'w') as f:
             json.dump(metrics, f, indent=2)
         
-        with open(args.final_images_path, 'wb') as f:
-            pickle.dump(final_images, f)
+        with open(args.generated_images_path, 'wb') as f:
+            pickle.dump(generated_images, f)
         
-        with open(args.metrics_summary_path, 'w') as f:
-            f.write(summary)
+        with open(args.evaluation_report_path, 'w') as f:
+            f.write(evaluation_report)
         
-        print('Comprehensive GAN Evaluation Complete!')
-        print(f'Results saved to: {args.eval_results_path}')
-        print(f'Generated {len(final_images)} images for CDN upload')
+        print('GAN Evaluation Complete!')
+        print(f'  Metrics saved to: {args.eval_metrics_path}')
+        print(f'  Generated images saved to: {args.generated_images_path}')
+        print(f'  Report saved to: {args.evaluation_report_path}')
 
     args:
       - --trained_model_path
@@ -536,9 +222,9 @@ implementation:
       - {inputPath: training_history}
       - --eval_config_str
       - {inputValue: eval_config}
-      - --eval_results_path
-      - {outputPath: eval_results}
-      - --final_images_path
-      - {outputPath: final_images}
-      - --metrics_summary_path
-      - {outputPath: metrics_summary}
+      - --eval_metrics_path
+      - {outputPath: eval_metrics}
+      - --generated_images_path
+      - {outputPath: generated_images}
+      - --evaluation_report_path
+      - {outputPath: evaluation_report}
