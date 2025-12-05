@@ -1,4 +1,4 @@
-name: GAN Build Model
+name: GANBuildModel
 description: Instantiates either DCGAN or VanillaGAN model using GANFactory based on configuration
 inputs:
   - name: config_str
@@ -333,15 +333,14 @@ implementation:
             print(f"Latent Dim: {model_config.get('latent_dim', 100)}")
             
         print("="*50)
-
     args:
-      - --model_name
+      - "--model_name"
       - {inputValue: model_name}
-      - --config_str
+      - "--config_str"
       - {inputValue: config_str}
-      - --model_out
+      - "--model_out"
       - {outputPath: model_out}
-      - --config_updated
+      - "--config_updated"
       - {outputPath: config_updated}
-      - --model_info_out
+      - "--model_info_out"
       - {outputPath: model_info_out}
