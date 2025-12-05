@@ -2,11 +2,9 @@ name: GANBuildModel
 description: Instantiates either DCGAN or VanillaGAN model using GANFactory based on configuration
 inputs:
   - name: config_str
-    type: String
-    description: Model configuration as JSON string (must include model_type: 'dcgan' or 'vanilla_gan')
+    type: String    
   - name: model_name
     type: String
-    description: GAN model architecture name ('dcgan' or 'vanilla_gan')
 outputs:
   - name: model_out
     type: Model
