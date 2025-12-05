@@ -13,15 +13,14 @@ outputs:
 
 implementation:
   container:
-    image: gurpreetgandhi/nesy-factory:v33
+    image: gurpreetgandhi/nesy-factory:v34  # UPDATED to v34
     command:
       - sh
       - -c
       - |
         # Install torchvision compatible with nesy-factory requirements
-        # nesy-factory 1.0.0 requires torch<2.3.0,>=2.0.0
-        # So we install torchvision 0.15.2 which is compatible with torch 2.0.0-2.2.0
-        pip install torchvision==0.15.2 --no-deps --quiet
+        pip install torchvision==0.15.2 --quiet
+        echo "Torchvision installed"
         exec "$0" "$@"
       - python3
       - -u
@@ -40,7 +39,6 @@ implementation:
         # Parse GAN configuration
         gan_config_str = args.gan_config
         print(f'GAN config received, length: {len(gan_config_str)}')
-        print(f'GAN Config preview: {gan_config_str[:100]}...')
         
         try:
             gan_config = json.loads(gan_config_str)
@@ -76,13 +74,20 @@ implementation:
         gan_model = None
         
         if is_dcgan:
-            print('Importing DCGAN...')
+            print('Importing DCGAN from nesy_factory...')
             try:
+                # Try to import from nesy_factory.GANs
                 from nesy_factory.GANs.dcgan import DCGAN, DCGANConfig
-                print('DCGAN imported successfully')
+                print('DCGAN imported successfully from nesy_factory.GANs')
             except ImportError as e:
-                print(f'DCGAN import error: {e}')
-                raise
+                print(f'DCGAN import error from nesy_factory.GANs: {e}')
+                # Try alternative import
+                try:
+                    from nesy_factory.GANs import DCGAN, DCGANConfig
+                    print('DCGAN imported successfully from nesy_factory.GANs')
+                except ImportError as e2:
+                    print(f'Alternative import error: {e2}')
+                    raise
             
             print('Creating DCGAN model...')
             dcgan_config_dict = {
@@ -118,13 +123,20 @@ implementation:
                 raise
         
         elif is_vanilla_gan:
-            print('Importing VanillaGAN...')
+            print('Importing VanillaGAN from nesy_factory...')
             try:
+                # Try to import from nesy_factory.GANs
                 from nesy_factory.GANs.vanilla_gan import VanillaGAN, VanillaGANConfig
-                print('VanillaGAN imported successfully')
+                print('VanillaGAN imported successfully from nesy_factory.GANs')
             except ImportError as e:
-                print(f'VanillaGAN import error: {e}')
-                raise
+                print(f'VanillaGAN import error from nesy_factory.GANs: {e}')
+                # Try alternative import
+                try:
+                    from nesy_factory.GANs import VanillaGAN, VanillaGANConfig
+                    print('VanillaGAN imported successfully from nesy_factory.GANs')
+                except ImportError as e2:
+                    print(f'Alternative import error: {e2}')
+                    raise
             
             print('Creating Vanilla GAN model...')
             vanilla_config_dict = {
