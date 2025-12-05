@@ -1,18 +1,24 @@
-name: Upload DCGAN Images To CDN
-description: Uploads DCGAN generated images and evaluation results to CDN.
+name: Upload GAN Images To CDN
+description: Uploads GAN generated images and results to CDN.
 inputs:
-  - name: generated_images
+  - name: cdn_ready_images
     type: Dataset
-  - name: eval_metrics
+    description: "Images from Visualize GAN Results component"
+  - name: training_metrics
     type: String
-  - name: evaluation_report
+    description: "Training metrics from Train GAN Model component"
+  - name: visualization_report
     type: String
+    description: "Visualization report from Visualize GAN Results component"
   - name: bearer_token
     type: string
+    description: "Access token from IAMLoginService component"
   - name: domain
     type: String
+    description: "Domain for upload"
   - name: get_cdn
     type: String
+    description: "CDN endpoint"
 outputs:
   - name: images_cdn_urls
     type: String
@@ -23,12 +29,15 @@ outputs:
   - name: report_cdn_url
     type: String
     description: "CDN URL for evaluation report"
+  - name: upload_summary
+    type: String
+    description: "Summary of upload results"
 implementation:
   container:
     image: python:3.8-slim
     command:
       - sh
-      - -ec
+      - -c
       - |
         if ! command -v curl &> /dev/null; then
             echo "curl not found, installing..."
@@ -42,18 +51,19 @@ implementation:
         import sys, os, subprocess, json, base64, pickle, uuid, tempfile
         from pathlib import Path
         
-        print('Starting DCGAN Images CDN Upload')
+        print('Starting GAN Images CDN Upload')
         
         # Parse arguments
-        generated_images_path = sys.argv[1]
-        eval_metrics_path = sys.argv[2]
-        evaluation_report_path = sys.argv[3]
+        cdn_ready_images_path = sys.argv[1]
+        training_metrics_path = sys.argv[2]
+        visualization_report_path = sys.argv[3]
         bearer_token_path = sys.argv[4]
         domain = sys.argv[5]
         get_cdn = sys.argv[6]
         images_urls_path = sys.argv[7]
         metrics_url_path = sys.argv[8]
         report_url_path = sys.argv[9]
+        upload_summary_path = sys.argv[10]
         
         print('Loading inputs...')
         
@@ -104,17 +114,18 @@ implementation:
                 print(f'JSON parse error: {e}')
                 return None
         
-        # Load generated images
-        with open(generated_images_path, 'rb') as f:
-            generated_images = pickle.load(f)
+        # Load CDN-ready images
+        with open(cdn_ready_images_path, 'rb') as f:
+            cdn_ready_images = pickle.load(f)
         
-        print(f'Loaded {len(generated_images)} generated images')
+        print(f'Loaded {len(cdn_ready_images)} CDN-ready images')
         
         # Upload each image to CDN
         image_urls = []
+        uploaded_count = 0
         
         with tempfile.TemporaryDirectory() as temp_dir:
-            for i, img_data in enumerate(generated_images):
+            for i, img_data in enumerate(cdn_ready_images):
                 try:
                     # Decode base64 image
                     img_bytes = base64.b64decode(img_data['image_data'])
@@ -125,7 +136,7 @@ implementation:
                         f.write(img_bytes)
                     
                     # Upload to CDN
-                    filename = img_data.get('filename', f'dcgan_image_{i:03d}.png')
+                    filename = img_data.get('filename', f'gan_image_{i:03d}.png')
                     cdn_url = upload_file_to_cdn(temp_file, filename)
                     
                     if cdn_url:
@@ -133,10 +144,10 @@ implementation:
                             'index': i,
                             'filename': filename,
                             'cdn_url': cdn_url,
-                            'brightness': img_data.get('brightness', 0),
-                            'contrast': img_data.get('contrast', 0)
+                            'metadata': img_data.get('metadata', {})
                         })
-                        print(f'Uploaded image {i+1}/{len(generated_images)}')
+                        uploaded_count += 1
+                        print(f'Uploaded image {i+1}/{len(cdn_ready_images)}')
                     else:
                         print(f'Failed to upload image {i+1}')
                         
@@ -144,34 +155,42 @@ implementation:
                     print(f'Error processing image {i}: {str(e)}')
                     continue
         
-        # Upload evaluation metrics
+        # Upload training metrics
         metrics_url = None
-        if os.path.exists(eval_metrics_path):
+        if os.path.exists(training_metrics_path):
             with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as temp_file:
-                # Read and copy metrics
-                with open(eval_metrics_path, 'r') as f:
+                with open(training_metrics_path, 'r') as f:
                     metrics_content = f.read()
                 temp_file.write(metrics_content)
                 temp_file_path = temp_file.name
             
-            metrics_url = upload_file_to_cdn(temp_file_path, 'dcgan_evaluation_metrics.json')
+            metrics_url = upload_file_to_cdn(temp_file_path, 'gan_training_metrics.json')
             os.unlink(temp_file_path)
         
-        # Upload evaluation report
+        # Upload visualization report
         report_url = None
-        if os.path.exists(evaluation_report_path):
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as temp_file:
-                # Read and copy report
-                with open(evaluation_report_path, 'r') as f:
+        if os.path.exists(visualization_report_path):
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as temp_file:
+                with open(visualization_report_path, 'r') as f:
                     report_content = f.read()
                 temp_file.write(report_content)
                 temp_file_path = temp_file.name
             
-            report_url = upload_file_to_cdn(temp_file_path, 'dcgan_evaluation_report.txt')
+            report_url = upload_file_to_cdn(temp_file_path, 'gan_visualization_report.json')
             os.unlink(temp_file_path)
         
+        # Create upload summary
+        upload_summary = {
+            'total_images_uploaded': uploaded_count,
+            'total_images_attempted': len(cdn_ready_images),
+            'success_rate': (uploaded_count / len(cdn_ready_images)) * 100 if cdn_ready_images else 0,
+            'metrics_uploaded': metrics_url is not None,
+            'report_uploaded': report_url is not None,
+            'image_urls_count': len(image_urls),
+            'upload_timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
+        }
+        
         # Save outputs
-        # Save image URLs
         output_dir = os.path.dirname(images_urls_path)
         if output_dir and not os.path.exists(output_dir):
             os.makedirs(output_dir, exist_ok=True)
@@ -179,7 +198,6 @@ implementation:
         with open(images_urls_path, 'w') as f:
             json.dump(image_urls, f, indent=2)
         
-        # Save metrics URL
         output_dir_metrics = os.path.dirname(metrics_url_path)
         if output_dir_metrics and not os.path.exists(output_dir_metrics):
             os.makedirs(output_dir_metrics, exist_ok=True)
@@ -187,7 +205,6 @@ implementation:
         with open(metrics_url_path, 'w') as f:
             f.write(metrics_url if metrics_url else '')
         
-        # Save report URL
         output_dir_report = os.path.dirname(report_url_path)
         if output_dir_report and not os.path.exists(output_dir_report):
             os.makedirs(output_dir_report, exist_ok=True)
@@ -195,19 +212,36 @@ implementation:
         with open(report_url_path, 'w') as f:
             f.write(report_url if report_url else '')
         
-        print('\\nUpload Summary:')
-        print(f'  Images uploaded: {len(image_urls)}/{len(generated_images)}')
+        output_dir_summary = os.path.dirname(upload_summary_path)
+        if output_dir_summary and not os.path.exists(output_dir_summary):
+            os.makedirs(output_dir_summary, exist_ok=True)
+        
+        with open(upload_summary_path, 'w') as f:
+            json.dump(upload_summary, f, indent=2)
+        
+        print('Upload Summary:')
+        print(f'  Images uploaded: {uploaded_count}/{len(cdn_ready_images)}')
         print(f'  Metrics uploaded: {'Yes' if metrics_url else 'No'}')
         print(f'  Report uploaded: {'Yes' if report_url else 'No'}')
-        print('DCGAN CDN Upload Complete')
-        " "$0" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"
+        print('GAN CDN Upload Complete')
     args:
-      - {inputPath: generated_images}
-      - {inputPath: eval_metrics}
-      - {inputPath: evaluation_report}
+      - --cdn_ready_images_path
+      - {inputPath: cdn_ready_images}
+      - --training_metrics_path
+      - {inputPath: training_metrics}
+      - --visualization_report_path
+      - {inputPath: visualization_report}
+      - --bearer_token_path
       - {inputPath: bearer_token}
+      - --domain
       - {inputValue: domain}
+      - --get_cdn
       - {inputValue: get_cdn}
+      - --images_urls_path
       - {outputPath: images_cdn_urls}
+      - --metrics_url_path
       - {outputPath: metrics_cdn_url}
+      - --report_url_path
       - {outputPath: report_cdn_url}
+      - --upload_summary_path
+      - {outputPath: upload_summary}
