@@ -1,5 +1,5 @@
-name: 2 Preprocess For GAN Fixed
-description: Preprocesses dataset for both DCGAN and Vanilla GAN based on model type.
+name: ssss Preprocess For GAN Fixed
+description: Preprocesses dataset for both DCGAN and Vanilla GAN using nesy_factory.
 inputs:
   - name: train_data
     type: Dataset
@@ -27,18 +27,14 @@ implementation:
         python -c "
         import sys, os, pickle, json, base64, io, math
         import numpy as np
-        import torch
-        import torchvision.transforms as transforms
-        from torch.utils.data import Dataset
-        from PIL import Image
         
-        print('Starting GAN Preprocessing (DCGAN or Vanilla GAN)')
+        print('Starting GAN Preprocessing with nesy_factory')
         
-        # Parse arguments - CORRECTED ORDER
+        # Parse arguments
         train_data_path = sys.argv[1]
         dataset_info_path = sys.argv[2]
         data_config_str = sys.argv[3]
-        model_config_str = sys.argv[4]  # This is model_config, not processed_data_path
+        model_config_str = sys.argv[4]
         processed_data_path = sys.argv[5]
         gan_config_path = sys.argv[6]
         
@@ -60,32 +56,31 @@ implementation:
         except:
             model_config = {}
         
-        # Determine model type - FROM PARSED CONFIG
+        # Determine model type
         model_type = model_config.get('model_type', 'dcgan').lower()
-        is_dcgan = model_type == 'dcgan'
-        is_vanilla_gan = model_type == 'vanilla_gan'
-        
-        if not (is_dcgan or is_vanilla_gan):
-            print('Warning: Unknown model type ' + model_type + '. Defaulting to DCGAN.')
-            model_type = 'dcgan'
-            is_dcgan = True
         
         print('Processing for ' + model_type.upper() + ' GAN')
         print('Loaded ' + str(len(train_data)) + ' samples')
         
-        # Get parameters from configs
+        # Use nesy_factory create_default_transforms
+        try:
+            from nesy_factory.GANs import create_default_transforms
+            print('Imported nesy_factory GAN transforms')
+        except ImportError as e:
+            print(f'Error importing nesy_factory: {e}')
+            # Fallback
+            import torchvision.transforms as transforms
+            create_default_transforms = lambda size: transforms.Compose([
+                transforms.Resize(size),
+                transforms.CenterCrop(size),
+                transforms.ToTensor(),
+                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+            ])
+        
+        # Get parameters
         image_size = model_config.get('image_size', data_config.get('image_size', 64))
         channels = data_config.get('channels', 3)
-        
-        # Adjust default sizes based on model type
-        if is_vanilla_gan:
-            default_size = 28
-        else:
-            default_size = 64
-        
         target_size = model_config.get('target_size', image_size)
-        if target_size != image_size:
-            print('Resizing from ' + str(image_size) + ' to ' + str(target_size))
         
         print('Parameters:')
         print('  Model Type: ' + model_type.upper())
@@ -93,7 +88,7 @@ implementation:
         print('  Target Size: ' + str(target_size))
         
         # Define dataset class
-        class GANDataset(Dataset):
+        class GANDataset:
             def __init__(self, data_list, transform=None, model_type='dcgan', target_size=64, channels=3):
                 self.data_list = data_list
                 self.transform = transform
@@ -108,6 +103,9 @@ implementation:
                 item = self.data_list[idx]
                 try:
                     img_data = base64.b64decode(item['image_data'])
+                    from PIL import Image
+                    import torch
+                    
                     img = Image.open(io.BytesIO(img_data))
                     
                     if self.channels == 1 and img.mode != 'L':
@@ -118,52 +116,20 @@ implementation:
                     if self.transform:
                         img = self.transform(img)
                     
-                    if self.model_type == 'vanilla_gan':
-                        img = img.view(-1)
-                    
                     return img
                 except Exception as e:
                     print('Error processing image ' + str(idx) + ': ' + str(e))
-                    if self.model_type == 'vanilla_gan':
-                        return torch.zeros(self.target_size * self.target_size * self.channels)
-                    else:
-                        return torch.zeros(self.channels, self.target_size, self.target_size)
+                    import torch
+                    return torch.zeros(self.channels, self.target_size, self.target_size)
         
-        # Create transform
-        if is_vanilla_gan:
-            if channels == 1:
-                transform = transforms.Compose([
-                    transforms.Resize(target_size),
-                    transforms.ToTensor(),
-                    transforms.Normalize((0.5,), (0.5,))
-                ])
-            else:
-                transform = transforms.Compose([
-                    transforms.Resize(target_size),
-                    transforms.ToTensor(),
-                    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-                ])
-        else:
-            if channels == 1:
-                transform = transforms.Compose([
-                    transforms.Resize(target_size),
-                    transforms.CenterCrop(target_size),
-                    transforms.ToTensor(),
-                    transforms.Normalize((0.5,), (0.5,))
-                ])
-            else:
-                transform = transforms.Compose([
-                    transforms.Resize(target_size),
-                    transforms.CenterCrop(target_size),
-                    transforms.ToTensor(),
-                    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-                ])
+        # Create transform using nesy_factory
+        transform = create_default_transforms(target_size)
         
         # Create dataset
         dataset = GANDataset(train_data, transform, model_type, target_size, channels)
         
-        # Calculate input dimension
-        if is_vanilla_gan:
+        # Calculate input dimension for vanilla GAN
+        if model_type == 'vanilla_gan':
             input_dim = target_size * target_size * channels
             print('Vanilla GAN input dimension: ' + str(input_dim))
         else:
@@ -177,7 +143,7 @@ implementation:
             'image_size': target_size,
             'channels': channels,
             'num_samples': len(dataset),
-            'is_flattened': is_vanilla_gan
+            'is_flattened': model_type == 'vanilla_gan'
         }
         
         # Save processed data
@@ -185,13 +151,11 @@ implementation:
         with open(processed_data_path, 'wb') as f:
             pickle.dump(data_wrapper, f)
         
-        # Create GAN configuration
-        if is_vanilla_gan:
+        # Create GAN configuration compatible with nesy_factory
+        if model_type == 'vanilla_gan':
             gan_config = {
                 'model_type': 'vanilla_gan',
                 'input_dim': input_dim,
-                'image_size': target_size,
-                'channels': channels,
                 'latent_dim': model_config.get('latent_dim', 100),
                 'generator_layers': model_config.get('generator_layers', [256, 512]),
                 'discriminator_layers': model_config.get('discriminator_layers', [512, 256]),
@@ -199,26 +163,21 @@ implementation:
                 'learning_rate': model_config.get('learning_rate', 0.0002),
                 'epochs': model_config.get('epochs', 50),
                 'training_algorithm': model_config.get('training_algorithm', 'backprop'),
-                'device': 'cuda' if torch.cuda.is_available() else 'cpu'
+                'device': 'cuda' if hasattr(__builtins__, '__import__') and __import__('torch').cuda.is_available() else 'cpu'
             }
         else:
-            num_gen_layers = max(2, int(math.log2(target_size / 4)))
-            gen_layers = [512 // (2 ** i) for i in range(num_gen_layers)]
-            
             gan_config = {
                 'model_type': 'dcgan',
                 'image_size': target_size,
                 'channels': channels,
                 'latent_dim': model_config.get('latent_dim', 100),
-                'generator_layers': gen_layers,
-                'discriminator_layers': [64 * (2 ** i) for i in range(num_gen_layers - 1)],
+                'generator_layers': model_config.get('generator_layers', []),  # Let DCGANConfig set defaults
+                'discriminator_layers': model_config.get('discriminator_layers', []),
                 'batch_size': model_config.get('batch_size', 32),
-                'learning_rate': 0.0002,
-                'beta1': 0.5,
+                'learning_rate': model_config.get('learning_rate', 0.0002),
                 'epochs': model_config.get('epochs', 50),
                 'training_algorithm': model_config.get('training_algorithm', 'backprop'),
-                'use_wgan': False,
-                'device': 'cuda' if torch.cuda.is_available() else 'cpu'
+                'device': 'cuda' if hasattr(__builtins__, '__import__') and __import__('torch').cuda.is_available() else 'cpu'
             }
         
         # Save GAN config
