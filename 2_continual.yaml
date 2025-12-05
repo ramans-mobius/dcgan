@@ -1,23 +1,28 @@
-name: Finetune GAN Continual Learning
-description: Finetunes GAN model on continual learning tasks sequentially.
+name: Create GAN Continual Learning Tasks
+description: Splits GAN training into multiple continual learning tasks for progressive training.
 inputs:
-  - name: base_model
-    type: Model
-  - name: cl_tasks
+  - name: train_data
     type: Dataset
-  - name: finetune_config
+    description: "Training data from Load Dataset component"
+  - name: test_data
+    type: Dataset
+    description: "Test data from Load Dataset component"
+  - name: model_config
     type: String
-    description: "Finetuning configuration"
+    description: "Model configuration specifying GAN type and algorithm"
+  - name: task_config
+    type: String
+    description: "Continual learning task configuration"
 outputs:
-  - name: finetuned_models
+  - name: gan_tasks
     type: Dataset
-    description: "List of finetuned models per task"
-  - name: cl_history
+    description: "List of GAN continual learning tasks"
+  - name: task_summary
     type: String
-    description: "Continual learning history"
-  - name: consolidated_model
-    type: Model
-    description: "Final consolidated model"
+    description: "Summary of created tasks"
+  - name: progressive_configs
+    type: String
+    description: "Progressive GAN configurations for each task"
 implementation:
   container:
     image: gurpreetgandhi/nesy-factory:v33
@@ -25,203 +30,265 @@ implementation:
       - sh
       - -c
       - |
-        # Install torchvision compatible with nesy-factory
         pip install torchvision==0.15.2 --no-deps --quiet
         exec "$0" "$@"
       - python3
       - -u
       - -c
       - |
-        import sys, os, pickle, json, copy, time, argparse
-        import torch
-        from torch.utils.data import DataLoader
+        import sys, os, pickle, json, base64, io, math, argparse
         import numpy as np
+        import torch
+        from torch.utils.data import DataLoader, Dataset, TensorDataset
+        from PIL import Image
+        import torchvision.transforms as transforms
         
         parser = argparse.ArgumentParser()
-        parser.add_argument('--base_model_path', type=str, required=True)
-        parser.add_argument('--cl_tasks_path', type=str, required=True)
-        parser.add_argument('--finetune_config_str', type=str, required=True)
-        parser.add_argument('--finetuned_models_path', type=str, required=True)
-        parser.add_argument('--cl_history_path', type=str, required=True)
-        parser.add_argument('--consolidated_model_path', type=str, required=True)
+        parser.add_argument('--train_data_path', type=str, required=True)
+        parser.add_argument('--test_data_path', type=str, required=True)
+        parser.add_argument('--model_config_str', type=str, required=True)
+        parser.add_argument('--task_config_str', type=str, required=True)
+        parser.add_argument('--gan_tasks_path', type=str, required=True)
+        parser.add_argument('--task_summary_path', type=str, required=True)
+        parser.add_argument('--progressive_configs_path', type=str, required=True)
         args = parser.parse_args()
         
-        print('Starting GAN Continual Learning Finetuning')
+        print('Creating GAN Continual Learning Tasks')
         
-        # Load base model
-        with open(args.base_model_path, 'rb') as f:
-            base_model = pickle.load(f)
+        # Load data
+        with open(args.train_data_path, 'rb') as f:
+            train_data = pickle.load(f)
         
-        # Load continual learning tasks
-        with open(args.cl_tasks_path, 'rb') as f:
-            cl_tasks = pickle.load(f)
+        with open(args.test_data_path, 'rb') as f:
+            test_data = pickle.load(f)
         
-        # Parse config
-        try:
-            finetune_config = json.loads(args.finetune_config_str)
-        except:
-            finetune_config = {}
+        # Parse configurations
+        model_config = json.loads(args.model_config_str) if args.model_config_str else {}
+        task_config = json.loads(args.task_config_str) if args.task_config_str else {}
         
-        print(f'Starting continual learning with {len(cl_tasks)} tasks')
+        # Extract configurations
+        model_type = model_config.get('model_type', 'dcgan').lower()
+        training_algorithm = model_config.get('training_algorithm', 'backprop').lower()
         
-        # Determine model type
-        model_type = 'dcgan'
-        if hasattr(base_model, 'config'):
-            if hasattr(base_model.config, 'model_type'):
-                model_type = base_model.config.model_type
-            elif hasattr(base_model.config, 'input_dim'):
-                model_type = 'vanilla_gan'
+        # Task parameters
+        num_tasks = task_config.get('num_tasks', 3)
+        progressive_resolution = task_config.get('progressive_resolution', True)
+        incremental_complexity = task_config.get('incremental_complexity', True)
+        task_type = task_config.get('task_type', 'temporal_split')
         
-        # Training history
-        cl_history = {
-            'tasks': [],
+        print(f'Model Type: {model_type}')
+        print(f'Training Algorithm: {training_algorithm}')
+        print(f'Number of Tasks: {num_tasks}')
+        print(f'Task Type: {task_type}')
+        
+        # Prepare data for splitting
+        def prepare_dataset(data_list):
+            prepared_data = []
+            for item in data_list:
+                if isinstance(item, dict) and 'image_data' in item:
+                    try:
+                        img_data = base64.b64decode(item['image_data'])
+                        img = Image.open(io.BytesIO(img_data))
+                        
+                        # Basic transform for analysis
+                        transform = transforms.Compose([
+                            transforms.Resize((64, 64)),
+                            transforms.ToTensor(),
+                            transforms.Normalize((0.5,), (0.5,))
+                        ])
+                        
+                        img_tensor = transform(img)
+                        prepared_data.append(img_tensor)
+                    except:
+                        continue
+                elif isinstance(item, torch.Tensor):
+                    prepared_data.append(item)
+            
+            if prepared_data:
+                return torch.stack(prepared_data)
+            return torch.tensor([])
+        
+        # Prepare datasets
+        train_tensors = prepare_dataset(train_data)
+        test_tensors = prepare_dataset(test_data)
+        
+        print(f'Train samples: {len(train_tensors)}')
+        print(f'Test samples: {len(test_tensors)}')
+        
+        # Create GAN tasks based on strategy
+        gan_tasks = []
+        progressive_configs = []
+        
+        if task_type == 'temporal_split':
+            # Split data temporally
+            train_splits = np.array_split(range(len(train_tensors)), num_tasks)
+            test_splits = np.array_split(range(len(test_tensors)), num_tasks)
+            
+            for task_idx in range(num_tasks):
+                # Select data for this task
+                train_indices = train_splits[task_idx]
+                test_indices = test_splits[task_idx]
+                
+                task_train_data = train_tensors[train_indices] if len(train_tensors) > 0 else torch.tensor([])
+                task_test_data = test_tensors[test_indices] if len(test_tensors) > 0 else torch.tensor([])
+                
+                # Create progressive configuration for this task
+                if progressive_resolution:
+                    # Progressive resolution: start with small images, increase size
+                    base_size = model_config.get('image_size', 64)
+                    progressive_size = min(base_size, 32 * (task_idx + 1))
+                    
+                    task_config_dict = {
+                        'task_id': task_idx,
+                        'model_type': model_type,
+                        'training_algorithm': training_algorithm,
+                        'image_size': progressive_size,
+                        'latent_dim': model_config.get('latent_dim', 100),
+                        'generator_layers': model_config.get('generator_layers', []),
+                        'discriminator_layers': model_config.get('discriminator_layers', []),
+                        'batch_size': max(8, model_config.get('batch_size', 32) // (num_tasks - task_idx)),
+                        'learning_rate': model_config.get('learning_rate', 0.0002),
+                        'epochs': task_config.get('epochs_per_task', 10),
+                        'description': f'Task {task_idx+1}: Temporal Period {task_idx+1}/{num_tasks}',
+                        'progressive': {
+                            'resolution': progressive_size,
+                            'complexity_level': task_idx + 1,
+                            'is_final_task': task_idx == num_tasks - 1
+                        }
+                    }
+                else:
+                    # Same configuration for all tasks
+                    task_config_dict = {
+                        'task_id': task_idx,
+                        'model_type': model_type,
+                        'training_algorithm': training_algorithm,
+                        'image_size': model_config.get('image_size', 64),
+                        'latent_dim': model_config.get('latent_dim', 100),
+                        'batch_size': model_config.get('batch_size', 32),
+                        'learning_rate': model_config.get('learning_rate', 0.0002),
+                        'epochs': task_config.get('epochs_per_task', 10),
+                        'description': f'Task {task_idx+1}: Temporal Period {task_idx+1}/{num_tasks}'
+                    }
+                
+                # Adjust architecture for progressive complexity
+                if incremental_complexity and model_type == 'dcgan':
+                    # Increase layer complexity with each task
+                    base_layers = 3
+                    current_layers = min(6, base_layers + task_idx)
+                    
+                    task_config_dict['generator_layers'] = [512 // (2 ** i) for i in range(current_layers)]
+                    task_config_dict['discriminator_layers'] = [64 * (2 ** i) for i in range(current_layers - 1)]
+                
+                # Create task dataset wrapper
+                task_data_wrapper = {
+                    'task_id': task_idx,
+                    'train_data': task_train_data,
+                    'test_data': task_test_data,
+                    'train_indices': train_indices.tolist(),
+                    'test_indices': test_indices.tolist(),
+                    'num_train_samples': len(train_indices),
+                    'num_test_samples': len(test_indices),
+                    'task_config': task_config_dict,
+                    'requires_preprocessing': True
+                }
+                
+                gan_tasks.append(task_data_wrapper)
+                progressive_configs.append(task_config_dict)
+                
+                print(f'Created Task {task_idx+1}: {len(train_indices)} train, {len(test_indices)} test samples')
+        
+        elif task_type == 'progressive_difficulty':
+            # Progressive difficulty: easier samples first
+            # Sort by image complexity (simplified: by variance)
+            if len(train_tensors) > 0:
+                variances = [img.var().item() for img in train_tensors]
+                sorted_indices = np.argsort(variances)
+                
+                train_splits = np.array_split(sorted_indices, num_tasks)
+                
+                for task_idx in range(num_tasks):
+                    task_indices = train_splits[task_idx]
+                    task_train_data = train_tensors[task_indices]
+                    
+                    # Create configuration with increasing difficulty
+                    difficulty_factor = (task_idx + 1) / num_tasks
+                    
+                    task_config_dict = {
+                        'task_id': task_idx,
+                        'model_type': model_type,
+                        'training_algorithm': training_algorithm,
+                        'image_size': model_config.get('image_size', 64),
+                        'latent_dim': max(50, int(model_config.get('latent_dim', 100) * difficulty_factor)),
+                        'batch_size': model_config.get('batch_size', 32),
+                        'learning_rate': model_config.get('learning_rate', 0.0002) * (1.0 / (task_idx + 1)),
+                        'epochs': max(5, task_config.get('epochs_per_task', 10) + task_idx * 2),
+                        'description': f'Task {task_idx+1}: Difficulty Level {task_idx+1}/{num_tasks}',
+                        'difficulty_factor': difficulty_factor
+                    }
+                    
+                    # Create task
+                    task_data_wrapper = {
+                        'task_id': task_idx,
+                        'train_data': task_train_data,
+                        'test_data': test_tensors[:len(task_train_data)] if len(test_tensors) > 0 else torch.tensor([]),
+                        'train_indices': task_indices.tolist(),
+                        'num_train_samples': len(task_indices),
+                        'task_config': task_config_dict,
+                        'difficulty_level': task_idx + 1
+                    }
+                    
+                    gan_tasks.append(task_data_wrapper)
+                    progressive_configs.append(task_config_dict)
+                    
+                    print(f'Created Difficulty Task {task_idx+1}: {len(task_indices)} samples')
+        
+        # Create task summary
+        task_summary = {
+            'total_tasks_created': len(gan_tasks),
             'model_type': model_type,
-            'training_algo': getattr(base_model.config, 'training_algorithm', 'backprop') if hasattr(base_model, 'config') else 'backprop'
+            'training_algorithm': training_algorithm,
+            'task_type': task_type,
+            'progressive_resolution': progressive_resolution,
+            'incremental_complexity': incremental_complexity,
+            'task_details': []
         }
         
-        finetuned_models = []
-        current_model = copy.deepcopy(base_model)
-        
-        # Continual learning loop
-        for task_idx, task_data in enumerate(cl_tasks):
-            task_start_time = time.time()
-            
-            task_id = task_data.get('task_id', task_idx)
-            task_dataset = task_data.get('dataset')
-            task_config = task_data.get('config', {})
-            
-            print(f'=== Task {task_id+1}/{len(cl_tasks)} ===')
-            print(f'Description: {task_data.get("description", "No description")}')
-            print(f'Samples: {len(task_dataset)}')
-            
-            # Create dataloader for this task
-            batch_size = task_config.get('batch_size', finetune_config.get('batch_size', 16))
-            task_loader = DataLoader(
-                task_dataset,
-                batch_size=batch_size,
-                shuffle=True,
-                num_workers=0
-            )
-            
-            # Finetune model on this task
-            try:
-                # Adjust learning rate for fine-tuning
-                original_lr = getattr(current_model.config, 'learning_rate', 0.0002) if hasattr(current_model, 'config') else 0.0002
-                ft_lr = task_config.get('learning_rate', finetune_config.get('learning_rate', original_lr * 0.1))
-                
-                # If model has trainer, use it
-                if hasattr(current_model, 'trainer'):
-                    # Set lower learning rate for fine-tuning
-                    if hasattr(current_model.trainer, 'gen_optimizer'):
-                        for param_group in current_model.trainer.gen_optimizer.param_groups:
-                            param_group['lr'] = ft_lr
-                    if hasattr(current_model.trainer, 'disc_optimizer'):
-                        for param_group in current_model.trainer.disc_optimizer.param_groups:
-                            param_group['lr'] = ft_lr
-                    
-                    # Train for fewer epochs
-                    ft_epochs = task_config.get('epochs', finetune_config.get('epochs_per_task', 10))
-                    
-                    task_metrics = {
-                        'task_id': task_id,
-                        'epochs': ft_epochs,
-                        'learning_rate': ft_lr,
-                        'samples': len(task_dataset)
-                    }
-                    
-                    # Simple training loop for continual learning
-                    for epoch in range(ft_epochs):
-                        epoch_d_loss = 0
-                        epoch_g_loss = 0
-                        batch_count = 0
-                        
-                        for batch_data in task_loader:
-                            real_imgs = batch_data
-                            
-                            # Train discriminator
-                            if hasattr(current_model.trainer, 'train_discriminator'):
-                                d_metrics = current_model.trainer.train_discriminator(real_imgs)
-                                epoch_d_loss += d_metrics.get('d_loss', 0)
-                            
-                            # Train generator
-                            if hasattr(current_model.trainer, 'train_generator'):
-                                g_metrics = current_model.trainer.train_generator(real_imgs.size(0))
-                                epoch_g_loss += g_metrics.get('g_loss', 0)
-                            
-                            batch_count += 1
-                        
-                        avg_d_loss = epoch_d_loss / batch_count if batch_count > 0 else 0
-                        avg_g_loss = epoch_g_loss / batch_count if batch_count > 0 else 0
-                        
-                        if epoch % max(1, ft_epochs // 5) == 0:
-                            print(f'  Epoch {epoch+1}/{ft_epochs}: D Loss: {avg_d_loss:.4f}, G Loss: {avg_g_loss:.4f}')
-                    
-                    task_metrics['final_d_loss'] = avg_d_loss
-                    task_metrics['final_g_loss'] = avg_g_loss
-                    
-                else:
-                    print('  Model has no trainer, skipping fine-tuning for this task')
-                    task_metrics = {
-                        'task_id': task_id,
-                        'skipped': True,
-                        'reason': 'No trainer available'
-                    }
-                
-            except Exception as e:
-                print(f'  Error fine-tuning task {task_id}: {e}')
-                task_metrics = {
-                    'task_id': task_id,
-                    'error': str(e),
-                    'skipped': True
-                }
-            
-            task_time = time.time() - task_start_time
-            task_metrics['training_time'] = task_time
-            
-            # Save task model
-            task_model_copy = copy.deepcopy(current_model)
-            finetuned_models.append({
-                'task_id': task_id,
-                'model': task_model_copy,
-                'metrics': task_metrics,
-                'config': task_config
+        for task in gan_tasks:
+            task_summary['task_details'].append({
+                'task_id': task['task_id'],
+                'train_samples': task['num_train_samples'],
+                'test_samples': task.get('num_test_samples', 0),
+                'description': task['task_config']['description']
             })
-            
-            cl_history['tasks'].append(task_metrics)
-            
-            print(f'Task {task_id+1} completed in {task_time:.1f}s')
-        
-        # Create consolidated model (average weights or last model)
-        consolidated_model = copy.deepcopy(current_model)
         
         # Save outputs
-        os.makedirs(os.path.dirname(args.finetuned_models_path) or '.', exist_ok=True)
-        with open(args.finetuned_models_path, 'wb') as f:
-            pickle.dump(finetuned_models, f)
+        os.makedirs(os.path.dirname(args.gan_tasks_path) or '.', exist_ok=True)
+        with open(args.gan_tasks_path, 'wb') as f:
+            pickle.dump(gan_tasks, f)
         
-        os.makedirs(os.path.dirname(args.cl_history_path) or '.', exist_ok=True)
-        with open(args.cl_history_path, 'w') as f:
-            json.dump(cl_history, f, indent=2)
+        os.makedirs(os.path.dirname(args.task_summary_path) or '.', exist_ok=True)
+        with open(args.task_summary_path, 'w') as f:
+            json.dump(task_summary, f, indent=2)
         
-        os.makedirs(os.path.dirname(args.consolidated_model_path) or '.', exist_ok=True)
-        with open(args.consolidated_model_path, 'wb') as f:
-            pickle.dump(consolidated_model, f)
+        os.makedirs(os.path.dirname(args.progressive_configs_path) or '.', exist_ok=True)
+        with open(args.progressive_configs_path, 'w') as f:
+            json.dump(progressive_configs, f, indent=2)
         
-        print(f'Continual Learning Complete!')
-        print(f'  Tasks processed: {len(cl_tasks)}')
-        print(f'  Models saved: {len(finetuned_models)}')
-        print(f'  Final model saved to: {args.consolidated_model_path}')
-
+        print(f'Created {len(gan_tasks)} GAN continual learning tasks')
+        print(f'Task Summary: {args.task_summary_path}')
+        print(f'Progressive Configs: {args.progressive_configs_path}')
     args:
-      - --base_model_path
-      - {inputPath: base_model}
-      - --cl_tasks_path
-      - {inputPath: cl_tasks}
-      - --finetune_config_str
-      - {inputValue: finetune_config}
-      - --finetuned_models_path
-      - {outputPath: finetuned_models}
-      - --cl_history_path
-      - {outputPath: cl_history}
-      - --consolidated_model_path
-      - {outputPath: consolidated_model}
+      - --train_data_path
+      - {inputPath: train_data}
+      - --test_data_path
+      - {inputPath: test_data}
+      - --model_config_str
+      - {inputValue: model_config}
+      - --task_config_str
+      - {inputValue: task_config}
+      - --gan_tasks_path
+      - {outputPath: gan_tasks}
+      - --task_summary_path
+      - {outputPath: task_summary}
+      - --progressive_configs_path
+      - {outputPath: progressive_configs}
