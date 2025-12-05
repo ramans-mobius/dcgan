@@ -335,7 +335,7 @@ implementation:
         """
         
         for rec in quality_scores['recommendations']:
-            evaluation_report += f"- {rec}\n"
+            evaluation_report += f"- {rec}\\n"
         
         # Save outputs
         os.makedirs(os.path.dirname(args.eval_metrics_path) or '.', exist_ok=True)
