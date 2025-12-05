@@ -1,25 +1,34 @@
 name: Evaluate GAN Model Comprehensive
-description: Comprehensive GAN evaluation with FID, precision, recall, F1, and all metrics.
+description: Comprehensive GAN evaluation with FID, Inception Score, and visual metrics.
 inputs:
   - name: trained_model
     type: Model
+    description: "Trained model from Train GAN Model Enhanced component"
   - name: test_data
     type: Dataset
+    description: "Test data from Load Dataset component"
   - name: training_history
     type: String
+    description: "Training history from Train GAN Model Enhanced component"
+  - name: gan_config
+    type: String
+    description: "GAN configuration from Preprocess For GAN component"
   - name: eval_config
     type: String
-    description: "Evaluation configuration"
+    description: "Evaluation configuration parameters"
 outputs:
   - name: eval_metrics
     type: String
-    description: "Complete evaluation metrics JSON"
-  - name: generated_images
+    description: "Complete evaluation metrics JSON including FID and IS scores"
+  - name: evaluation_samples
     type: Dataset
-    description: "Generated images for CDN upload"
+    description: "Generated samples for evaluation with quality metrics"
   - name: evaluation_report
     type: String
-    description: "Text summary of all metrics"
+    description: "Detailed evaluation report text summary"
+  - name: quality_assessment
+    type: String
+    description: "Quality assessment scores and recommendations"
 implementation:
   container:
     image: gurpreetgandhi/nesy-factory:v33
@@ -27,31 +36,35 @@ implementation:
       - sh
       - -c
       - |
-        # Install torchvision compatible with nesy-factory
-        pip install torchvision==0.15.2 scipy scikit-learn --no-deps --quiet
+        pip install torchvision==0.15.2 scipy scikit-learn --no-deps --quiet 2>/dev/null || true
+        pip install Pillow==10.0.0 numpy==1.24.3 --quiet
         exec "$0" "$@"
       - python3
       - -u
       - -c
       - |
-        import sys, os, pickle, json, base64, io, math, time, warnings, argparse
+        import sys, os, pickle, json, base64, io, math, time, argparse, warnings
         import numpy as np
         import torch
-        from torch.utils.data import DataLoader
+        import torch.nn as nn
+        import torch.optim as optim
+        import torchvision.transforms as transforms
+        import torchvision.models as models
+        from torch.utils.data import DataLoader, Dataset
         from PIL import Image
         from scipy import linalg
-        from sklearn.metrics import precision_score, recall_score, f1_score, accuracy_score
-        from sklearn.neighbors import NearestNeighbors
         warnings.filterwarnings('ignore')
         
         parser = argparse.ArgumentParser()
         parser.add_argument('--trained_model_path', type=str, required=True)
         parser.add_argument('--test_data_path', type=str, required=True)
-        parser.add_argument('--training_history_str', type=str, required=True)
+        parser.add_argument('--training_history_path', type=str, required=True)
+        parser.add_argument('--gan_config_path', type=str, required=True)
         parser.add_argument('--eval_config_str', type=str, required=True)
         parser.add_argument('--eval_metrics_path', type=str, required=True)
-        parser.add_argument('--generated_images_path', type=str, required=True)
+        parser.add_argument('--evaluation_samples_path', type=str, required=True)
         parser.add_argument('--evaluation_report_path', type=str, required=True)
+        parser.add_argument('--quality_assessment_path', type=str, required=True)
         args = parser.parse_args()
         
         print('Starting Comprehensive GAN Evaluation')
@@ -62,169 +75,390 @@ implementation:
         
         # Load test data
         with open(args.test_data_path, 'rb') as f:
-            test_data_wrapper = pickle.load(f)
+            test_data = pickle.load(f)
         
-        # Parse configs
-        try:
-            training_history = json.loads(args.training_history_str)
-        except:
-            training_history = {}
+        # Load training history
+        with open(args.training_history_path, 'r') as f:
+            training_history = json.load(f)
         
-        try:
-            eval_config = json.loads(args.eval_config_str)
-        except:
-            eval_config = {}
+        # Load configurations
+        with open(args.gan_config_path, 'r') as f:
+            gan_config = json.load(f)
+        
+        eval_config = json.loads(args.eval_config_str) if args.eval_config_str else {}
         
         # Determine model type
-        model_type = 'dcgan'
-        if hasattr(gan_model, 'config'):
-            if hasattr(gan_model.config, 'model_type'):
-                model_type = gan_model.config.model_type
-            elif hasattr(gan_model.config, 'input_dim'):
-                model_type = 'vanilla_gan'
+        model_type = gan_config.get('model_type', 'dcgan')
         
-        print(f'Evaluating {model_type.upper()} GAN with comprehensive metrics')
+        print(f'Evaluating {model_type.upper()} GAN')
         
-        # Get dataset from wrapper
-        test_dataset = test_data_wrapper.get('dataset')
-        if not test_dataset:
-            print('No test dataset found')
-            test_dataset = []
+        # Extract evaluation parameters
+        num_samples = eval_config.get('num_samples', 1000)
+        calculate_fid = eval_config.get('calculate_fid', True)
+        calculate_is = eval_config.get('calculate_is', True)
+        calculate_diversity = eval_config.get('calculate_diversity', True)
+        calculate_mode_coverage = eval_config.get('calculate_mode_coverage', True)
         
-        # Initialize metrics dictionary
-        metrics = {
+        # Prepare test dataset for evaluation
+        class SimpleDataset(Dataset):
+            def __init__(self, data_list):
+                self.data_list = data_list
+            def __len__(self):
+                return len(self.data_list)
+            def __getitem__(self, idx):
+                item = self.data_list[idx]
+                if isinstance(item, dict) and 'image_data' in item:
+                    img_data = base64.b64decode(item['image_data'])
+                    img = Image.open(io.BytesIO(img_data))
+                    transform = transforms.Compose([
+                        transforms.Resize((64, 64)),
+                        transforms.ToTensor(),
+                        transforms.Normalize((0.5,), (0.5,))
+                    ])
+                    return transform(img)
+                elif isinstance(item, torch.Tensor):
+                    return item
+                else:
+                    return torch.zeros(3, 64, 64)
+        
+        test_dataset = SimpleDataset(test_data)
+        test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+        
+        # Collect real images for FID calculation
+        real_images = []
+        for batch in test_loader:
+            if isinstance(batch, torch.Tensor):
+                real_images.append(batch)
+            else:
+                real_images.append(batch[0])
+            if len(real_images) * 32 >= num_samples:
+                break
+        
+        real_images = torch.cat(real_images, dim=0)[:num_samples]
+        
+        # Generate fake images for evaluation
+        if hasattr(gan_model, 'generator'):
+            gan_model.generator.eval()
+            
+            # Get model parameters
+            latent_dim = gan_config.get('latent_dim', 100)
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+            
+            generated_images = []
+            with torch.no_grad():
+                for i in range(0, num_samples, 32):
+                    batch_size = min(32, num_samples - i)
+                    
+                    if model_type == 'dcgan':
+                        noise = torch.randn(batch_size, latent_dim, 1, 1, device=device)
+                    else:
+                        noise = torch.randn(batch_size, latent_dim, device=device)
+                    
+                    if hasattr(gan_model.generator, 'to'):
+                        noise = noise.to(device)
+                        gan_model.generator.to(device)
+                    
+                    generated = gan_model.generator(noise).cpu()
+                    generated_images.append(generated)
+            
+            if generated_images:
+                fake_images = torch.cat(generated_images, dim=0)[:num_samples]
+            else:
+                fake_images = torch.zeros(num_samples, 3, 64, 64)
+        else:
+            fake_images = torch.zeros(num_samples, 3, 64, 64)
+        
+        # Calculate evaluation metrics
+        eval_metrics = {
             'model_type': model_type,
             'evaluation_time': time.strftime('%Y-%m-%d %H:%M:%S'),
-            'device': 'cuda' if torch.cuda.is_available() else 'cpu'
+            'num_samples_evaluated': min(len(real_images), len(fake_images))
         }
         
-        # Generate samples for evaluation
-        sample_count = eval_config.get('num_samples', 100)
-        generated_images = []
+        # Calculate FID Score
+        if calculate_fid and len(real_images) >= 100 and len(fake_images) >= 100:
+            try:
+                fid_calculator = FIDCalculator(device)
+                fid_score = fid_calculator.calculate(real_images[:100], fake_images[:100])
+                eval_metrics['fid_score'] = float(fid_score)
+                print(f'FID Score: {fid_score:.2f}')
+            except Exception as e:
+                print(f'FID calculation failed: {e}')
+                eval_metrics['fid_score'] = float('inf')
+        else:
+            eval_metrics['fid_score'] = float('inf')
         
-        try:
-            if hasattr(gan_model, 'generator') and gan_model.generator:
-                print(f'Generating {sample_count} samples for evaluation...')
-                
-                # Get latent dimension
-                latent_dim = 100
-                if hasattr(gan_model, 'config'):
-                    latent_dim = getattr(gan_model.config, 'latent_dim', 100)
-                
-                # Generate noise
-                gan_model.generator.eval()
-                with torch.no_grad():
-                    # Generate multiple batches
-                    batch_size = min(32, sample_count)
-                    for i in range(0, sample_count, batch_size):
-                        current_batch = min(batch_size, sample_count - i)
-                        noise = torch.randn(current_batch, latent_dim)
-                        
-                        # Add spatial dimensions for DCGAN
-                        if model_type == 'dcgan':
-                            noise = noise.view(current_batch, latent_dim, 1, 1)
-                        
-                        # Generate images
-                        samples = gan_model.generator(noise).cpu()
-                        
-                        # Denormalize from [-1, 1] to [0, 1]
-                        samples = (samples + 1) / 2
-                        samples = torch.clamp(samples, 0, 1)
-                        
-                        # Convert to base64 for storage
-                        for j in range(samples.size(0)):
-                            sample = samples[j]
-                            
-                            # Determine image dimensions
-                            if len(sample.shape) == 3:
-                                # DCGAN format [C, H, W]
-                                if sample.shape[0] == 1:
-                                    img_np = sample.squeeze(0).numpy()
-                                    img_pil = Image.fromarray((img_np * 255).astype(np.uint8), mode='L')
-                                else:
-                                    img_np = sample.permute(1, 2, 0).numpy()
-                                    img_pil = Image.fromarray((img_np * 255).astype(np.uint8), mode='RGB')
-                            else:
-                                img_size = int(math.sqrt(sample.shape[0]))
-                                img_np = sample.view(img_size, img_size).numpy()
-                                img_pil = Image.fromarray((img_np * 255).astype(np.uint8), mode='L')
-                            
-                            # Convert to base64
-                            img_bytes = io.BytesIO()
-                            img_pil.save(img_bytes, format='PNG')
-                            base64_data = base64.b64encode(img_bytes.getvalue()).decode('utf-8')
-                            
-                            # Calculate image statistics
-                            img_mean = float(np.mean(img_np))
-                            img_std = float(np.std(img_np))
-                            
-                            generated_images.append({
-                                'sample_id': i + j,
-                                'image_data': base64_data,
-                                'model_type': model_type,
-                                'filename': f'{model_type}_sample_{i+j}.png',
-                                'brightness': img_mean,
-                                'contrast': img_std,
-                                'metrics_ready': True
-                            })
-                
-                print(f'Generated {len(generated_images)} samples')
-                
-        except Exception as e:
-            print(f'Error generating samples: {e}')
+        # Calculate Inception Score
+        if calculate_is and len(fake_images) >= 100:
+            try:
+                inception_calculator = InceptionScoreCalculator(device)
+                is_mean, is_std = inception_calculator.calculate(fake_images[:100])
+                eval_metrics['inception_score_mean'] = float(is_mean)
+                eval_metrics['inception_score_std'] = float(is_std)
+                print(f'Inception Score: {is_mean:.2f} ± {is_std:.2f}')
+            except Exception as e:
+                print(f'Inception Score calculation failed: {e}')
+                eval_metrics['inception_score_mean'] = 0.0
+                eval_metrics['inception_score_std'] = 0.0
+        else:
+            eval_metrics['inception_score_mean'] = 0.0
+            eval_metrics['inception_score_std'] = 0.0
         
-        metrics['generated_samples'] = len(generated_images)
+        # Calculate diversity metrics
+        if calculate_diversity and len(fake_images) >= 10:
+            try:
+                # Calculate pairwise distances between generated samples
+                fake_flat = fake_images[:10].view(10, -1)
+                pairwise_dist = torch.cdist(fake_flat, fake_flat, p=2)
+                avg_pairwise_dist = pairwise_dist.mean().item()
+                eval_metrics['diversity_score'] = float(avg_pairwise_dist)
+            except:
+                eval_metrics['diversity_score'] = 0.0
+        else:
+            eval_metrics['diversity_score'] = 0.0
+        
+        # Calculate mode coverage
+        if calculate_mode_coverage and len(real_images) >= 10 and len(fake_images) >= 10:
+            try:
+                # Simple mode coverage approximation
+                real_flat = real_images[:10].view(10, -1)
+                fake_flat = fake_images[:10].view(10, -1)
+                
+                # Nearest neighbor distances
+                combined = torch.cat([real_flat, fake_flat], dim=0)
+                distances = torch.cdist(combined, combined, p=2)
+                
+                # Count how many real samples have a close fake neighbor
+                threshold = distances.mean().item()
+                mode_coverage = 0.0
+                for i in range(len(real_flat)):
+                    min_dist_to_fake = distances[i, len(real_flat):].min().item()
+                    if min_dist_to_fake < threshold:
+                        mode_coverage += 1
+                mode_coverage /= len(real_flat)
+                eval_metrics['mode_coverage'] = float(mode_coverage)
+            except:
+                eval_metrics['mode_coverage'] = 0.0
+        else:
+            eval_metrics['mode_coverage'] = 0.0
+        
+        # Generate evaluation samples with quality metrics
+        evaluation_samples = []
+        if len(fake_images) > 0:
+            for i in range(min(16, len(fake_images))):
+                sample_img = fake_images[i]
+                
+                # Convert to PIL Image
+                if sample_img.shape[0] == 1:
+                    img_np = sample_img.squeeze(0).numpy()
+                    img_pil = Image.fromarray((img_np * 255).astype(np.uint8), mode='L')
+                else:
+                    img_np = sample_img.permute(1, 2, 0).numpy()
+                    img_pil = Image.fromarray((img_np * 255).astype(np.uint8), mode='RGB')
+                
+                # Convert to base64
+                img_bytes = io.BytesIO()
+                img_pil.save(img_bytes, format='PNG')
+                base64_data = base64.b64encode(img_bytes.getvalue()).decode('utf-8')
+                
+                # Calculate sample quality metrics
+                sample_quality = {
+                    'brightness': float(img_np.mean()),
+                    'contrast': float(img_np.std()),
+                    'sharpness': float(np.max(img_np) - np.min(img_np))
+                }
+                
+                evaluation_samples.append({
+                    'sample_id': i,
+                    'image_data': base64_data,
+                    'filename': f'{model_type}_eval_sample_{i}.png',
+                    'quality_metrics': sample_quality,
+                    'evaluation_ready': True
+                })
         
         # Create evaluation report
-        report_lines = []
-        report_lines.append('=' * 70)
-        report_lines.append(f'{model_type.upper()} GAN EVALUATION REPORT')
-        report_lines.append('=' * 70)
-        report_lines.append('')
-        report_lines.append(f'Generated: {metrics["evaluation_time"]}')
-        report_lines.append(f'Model Type: {model_type}')
-        report_lines.append(f'Generated Samples: {len(generated_images)}')
-        report_lines.append(f'Device: {metrics["device"]}')
-        report_lines.append('')
-        report_lines.append('SUMMARY:')
-        report_lines.append('  Model evaluation completed successfully')
-        report_lines.append('  Generated images are ready for CDN upload')
-        report_lines.append('  Check metrics.json for detailed evaluation')
-        report_lines.append('')
-        report_lines.append('=' * 70)
+        evaluation_report = f"""
+        GAN EVALUATION REPORT
+        =====================
         
-        evaluation_report = '\\n'.join(report_lines)
+        Model Type: {model_type.upper()}
+        Evaluation Time: {eval_metrics['evaluation_time']}
+        Samples Evaluated: {eval_metrics['num_samples_evaluated']}
         
-        print(evaluation_report)
+        QUANTITATIVE METRICS:
+        --------------------
+        FID Score: {eval_metrics.get('fid_score', 'N/A'):.2f}
+        Inception Score: {eval_metrics.get('inception_score_mean', 'N/A'):.2f} ± {eval_metrics.get('inception_score_std', 'N/A'):.2f}
+        Diversity Score: {eval_metrics.get('diversity_score', 'N/A'):.4f}
+        Mode Coverage: {eval_metrics.get('mode_coverage', 'N/A'):.2%}
+        
+        QUALITY ASSESSMENT:
+        -------------------
+        """
+        
+        # Create quality assessment
+        quality_scores = {
+            'fid_quality': 'Excellent' if eval_metrics.get('fid_score', 999) < 50 else 
+                          'Good' if eval_metrics.get('fid_score', 999) < 100 else 
+                          'Fair' if eval_metrics.get('fid_score', 999) < 200 else 'Poor',
+            'is_quality': 'Excellent' if eval_metrics.get('inception_score_mean', 0) > 8 else 
+                         'Good' if eval_metrics.get('inception_score_mean', 0) > 6 else 
+                         'Fair' if eval_metrics.get('inception_score_mean', 0) > 4 else 'Poor',
+            'overall_quality': '',
+            'recommendations': []
+        }
+        
+        # Determine overall quality
+        if quality_scores['fid_quality'] == 'Excellent' and quality_scores['is_quality'] == 'Excellent':
+            quality_scores['overall_quality'] = 'Excellent'
+        elif quality_scores['fid_quality'] in ['Excellent', 'Good'] and quality_scores['is_quality'] in ['Excellent', 'Good']:
+            quality_scores['overall_quality'] = 'Good'
+        else:
+            quality_scores['overall_quality'] = 'Needs Improvement'
+        
+        # Generate recommendations
+        if eval_metrics.get('fid_score', 999) > 100:
+            quality_scores['recommendations'].append('Increase training epochs for better FID score')
+        if eval_metrics.get('inception_score_mean', 0) < 4:
+            quality_scores['recommendations'].append('Try different architecture or training algorithm')
+        if eval_metrics.get('diversity_score', 0) < 0.1:
+            quality_scores['recommendations'].append('Increase latent space exploration for better diversity')
+        
+        # Add quality assessment to evaluation report
+        evaluation_report += f"""
+        FID Quality: {quality_scores['fid_quality']}
+        Inception Score Quality: {quality_scores['is_quality']}
+        Overall Quality: {quality_scores['overall_quality']}
+        
+        RECOMMENDATIONS:
+        ---------------
+        """
+        
+        for rec in quality_scores['recommendations']:
+            evaluation_report += f"- {rec}\n"
         
         # Save outputs
         os.makedirs(os.path.dirname(args.eval_metrics_path) or '.', exist_ok=True)
         with open(args.eval_metrics_path, 'w') as f:
-            json.dump(metrics, f, indent=2)
+            json.dump(eval_metrics, f, indent=2)
         
-        with open(args.generated_images_path, 'wb') as f:
-            pickle.dump(generated_images, f)
+        os.makedirs(os.path.dirname(args.evaluation_samples_path) or '.', exist_ok=True)
+        with open(args.evaluation_samples_path, 'wb') as f:
+            pickle.dump(evaluation_samples, f)
         
+        os.makedirs(os.path.dirname(args.evaluation_report_path) or '.', exist_ok=True)
         with open(args.evaluation_report_path, 'w') as f:
             f.write(evaluation_report)
         
-        print('GAN Evaluation Complete!')
-        print(f'  Metrics saved to: {args.eval_metrics_path}')
-        print(f'  Generated images saved to: {args.generated_images_path}')
-        print(f'  Report saved to: {args.evaluation_report_path}')
-
+        os.makedirs(os.path.dirname(args.quality_assessment_path) or '.', exist_ok=True)
+        with open(args.quality_assessment_path, 'w') as f:
+            json.dump(quality_scores, f, indent=2)
+        
+        print('GAN Evaluation Completed')
+        print(f'Evaluation metrics saved to: {args.eval_metrics_path}')
+        print(f'Evaluation samples saved to: {args.evaluation_samples_path}')
+        
+        # Helper classes for FID and IS calculation
+        class FIDCalculator:
+            def __init__(self, device='cpu'):
+                self.device = device
+                try:
+                    self.model = models.inception_v3(pretrained=True, transform_input=False)
+                    self.model.eval()
+                    self.model.to(device)
+                    self.model.fc = nn.Identity()
+                    self.available = True
+                except:
+                    self.available = False
+            
+            def get_features(self, images):
+                if not self.available:
+                    return None
+                with torch.no_grad():
+                    if images.shape[1] == 1:
+                        images = images.repeat(1, 3, 1, 1)
+                    if images.shape[2] != 299 or images.shape[3] != 299:
+                        resize = transforms.Resize((299, 299))
+                        images = torch.stack([resize(img) for img in images])
+                    images = (images + 1) / 2
+                    images = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])(images)
+                    features = self.model(images)
+                return features.cpu().numpy()
+            
+            def calculate(self, real_images, generated_images):
+                if not self.available:
+                    return float('inf')
+                real_features = self.get_features(real_images)
+                gen_features = self.get_features(generated_images)
+                if real_features is None or gen_features is None:
+                    return float('inf')
+                mu1, sigma1 = real_features.mean(axis=0), np.cov(real_features, rowvar=False)
+                mu2, sigma2 = gen_features.mean(axis=0), np.cov(gen_features, rowvar=False)
+                ssdiff = np.sum((mu1 - mu2) ** 2.0)
+                covmean = linalg.sqrtm(sigma1.dot(sigma2))
+                if np.iscomplexobj(covmean):
+                    covmean = covmean.real
+                fid = ssdiff + np.trace(sigma1 + sigma2 - 2.0 * covmean)
+                return float(fid)
+        
+        class InceptionScoreCalculator:
+            def __init__(self, device='cpu'):
+                self.device = device
+                try:
+                    self.model = models.inception_v3(pretrained=True, transform_input=False)
+                    self.model.eval()
+                    self.model.to(device)
+                    self.model.fc = nn.Identity()
+                    self.available = True
+                except:
+                    self.available = False
+            
+            def get_features(self, images):
+                if not self.available:
+                    return None
+                with torch.no_grad():
+                    if images.shape[1] == 1:
+                        images = images.repeat(1, 3, 1, 1)
+                    if images.shape[2] != 299 or images.shape[3] != 299:
+                        resize = transforms.Resize((299, 299))
+                        images = torch.stack([resize(img) for img in images])
+                    images = (images + 1) / 2
+                    images = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])(images)
+                    features = self.model(images)
+                return features
+            
+            def calculate(self, generated_images, splits=10):
+                if not self.available or len(generated_images) < splits * 2:
+                    return 0.0, 0.0
+                features = self.get_features(generated_images)
+                if features is None:
+                    return 0.0, 0.0
+                softmax = nn.Softmax(dim=1)
+                scores = []
+                for i in range(splits):
+                    part = features[i * (len(features) // splits): (i + 1) * (len(features) // splits)]
+                    p_yx = softmax(part)
+                    p_y = p_yx.mean(0, keepdim=True)
+                    kl_d = p_yx * (torch.log(p_yx) - torch.log(p_y))
+                    kl_d = kl_d.sum(1)
+                    scores.append(kl_d.mean().exp().item())
+                return float(np.mean(scores)), float(np.std(scores))
     args:
       - --trained_model_path
       - {inputPath: trained_model}
       - --test_data_path
       - {inputPath: test_data}
-      - --training_history_str
+      - --training_history_path
       - {inputPath: training_history}
+      - --gan_config_path
+      - {inputPath: gan_config}
       - --eval_config_str
       - {inputValue: eval_config}
       - --eval_metrics_path
       - {outputPath: eval_metrics}
-      - --generated_images_path
-      - {outputPath: generated_images}
+      - --evaluation_samples_path
+      - {outputPath: evaluation_samples}
       - --evaluation_report_path
       - {outputPath: evaluation_report}
+      - --quality_assessment_path
+      - {outputPath: quality_assessment}
