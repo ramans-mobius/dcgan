@@ -1,4 +1,4 @@
-name: GANBuildModel
+name: GAN Build Model
 description: Instantiates either DCGAN or VanillaGAN model using GANFactory based on configuration
 inputs:
   - name: config_str
@@ -308,7 +308,7 @@ implementation:
         print(f"Model info saved to: {args.model_info_out}")
         
         # Print model summary
-        print("\n" + "="*50)
+        print("="*50)
         print("MODEL SUMMARY")
         print("="*50)
         print(f"Model Type: {model_type.upper()}")
