@@ -31,7 +31,7 @@ outputs:
     description: "Quality assessment scores and recommendations"
 implementation:
   container:
-    image: gurpreetgandhi/nesy-factory:v33
+    image: gurpreetgandhi/nesy-factory:v34
     command:
       - sh
       - -c
