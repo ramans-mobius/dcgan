@@ -1,5 +1,5 @@
-name: Train GAN Model Enhanced Fixed
-description: Enhanced GAN trainer with comprehensive metrics for both DCGAN and Vanilla GAN.
+name: ssss Train GAN Model Enhanced Fixed
+description: Enhanced GAN trainer using nesy_factory GAN implementations.
 inputs:
   - name: initialized_model
     type: Model
@@ -33,18 +33,17 @@ implementation:
       - sh
       - -c
       - |
-        # No pip install needed - use existing torch in image
         exec "$0" "$@"
       - python3
       - -u
       - -c
       - |
-        import sys, os, pickle, json, base64, io, math, time, warnings, traceback
+        import sys, os, pickle, json, base64, io, time, warnings, traceback
         import numpy as np
         
         warnings.filterwarnings('ignore')
         
-        print('Starting Enhanced GAN Training with nesy-factory GANs')
+        print('Starting GAN Training with nesy_factory')
         
         # Parse arguments
         initialized_model_path = sys.argv[1]
@@ -92,13 +91,22 @@ implementation:
             print(f'Error parsing train config: {e}, using defaults')
             train_config = {}
         
-        # Import torch
+        # Import torch and nesy_factory
         try:
             import torch
-            import torch.nn as nn
-            from torch.utils.data import DataLoader, TensorDataset
+            from torch.utils.data import DataLoader
             print(f'PyTorch version: {torch.__version__}')
             print(f'CUDA available: {torch.cuda.is_available()}')
+            
+            # Try to import nesy_factory evaluation functions
+            try:
+                from nesy_factory.GANs import compute_fid_score, compute_inception_score
+                print('Imported nesy_factory evaluation functions')
+            except ImportError as e:
+                print(f'Note: nesy_factory evaluation functions not available: {e}')
+                compute_fid_score = None
+                compute_inception_score = None
+                
         except ImportError as e:
             print(f'PyTorch import error: {e}')
             raise
@@ -108,36 +116,12 @@ implementation:
         if isinstance(data_wrapper, dict) and 'dataset' in data_wrapper:
             dataset = data_wrapper['dataset']
             print(f'Using wrapped dataset with {len(dataset)} samples')
-        elif isinstance(data_wrapper, list):
-            # Convert list of dicts to tensor dataset
-            try:
-                from PIL import Image
-                import torchvision.transforms as transforms
-                
-                tensors = []
-                for item in data_wrapper:
-                    if isinstance(item, dict) and 'image_data' in item:
-                        img_data = base64.b64decode(item['image_data'])
-                        img = Image.open(io.BytesIO(img_data))
-                        
-                        transform = transforms.Compose([
-                            transforms.Resize((64, 64)),
-                            transforms.ToTensor(),
-                            transforms.Normalize((0.5,), (0.5,))
-                        ])
-                        tensor = transform(img)
-                        tensors.append(tensor)
-                
-                if tensors:
-                    dataset = TensorDataset(torch.stack(tensors))
-                    print(f'Created tensor dataset with {len(dataset)} samples')
-            except Exception as e:
-                print(f'Error converting data: {e}')
         
         if dataset is None:
             print('No valid dataset found, creating dummy dataset')
-            # Create dummy dataset for testing
+            import torch
             dummy_data = torch.randn(100, 3, 64, 64)  # 100 samples, 3 channels, 64x64
+            from torch.utils.data import TensorDataset
             dataset = TensorDataset(dummy_data)
         
         # Extract training parameters
@@ -162,12 +146,11 @@ implementation:
         
         print(f'Created data loader with {len(train_loader)} batches')
         
-        # Train the model
+        # Train the model using nesy_factory's train method
         training_results = None
-        generated_samples_list = []
         
         try:
-            # Check if model has train() method
+            # Check if model has train() method (nesy_factory VanillaGAN or DCGAN)
             if hasattr(gan_model, 'train'):
                 print('Model has train() method, starting training...')
                 
@@ -182,33 +165,73 @@ implementation:
                 
                 print('Training completed successfully')
                 
+            # For Forward-Forward or CAFO trainers that need special handling
             elif hasattr(gan_model, 'trainer'):
-                print('Model has trainer, using trainer...')
+                print('Model has trainer, checking training algorithm...')
                 
-                # Use the trainer to train
-                if hasattr(gan_model.trainer, 'train_epoch'):
+                model_type = gan_config.get('model_type', 'dcgan')
+                training_algorithm = gan_config.get('training_algorithm', 'backprop')
+                
+                # Handle Forward-Forward training
+                if training_algorithm == 'forward_forward' and hasattr(gan_model.trainer, 'train_forward_forward'):
+                    print('Starting Forward-Forward training...')
+                    ff_results = gan_model.trainer.train_forward_forward(
+                        dataloader=train_loader,
+                        verbose=True
+                    )
+                    
+                    # Then do regular training
+                    print('Starting main training after FF...')
                     for epoch in range(epochs):
                         metrics = gan_model.trainer.train_epoch(train_loader)
-                        
                         if epoch % log_interval == 0:
                             print(f'Epoch [{epoch+1}/{epochs}] - {metrics}')
-                        
-                        if epoch % sample_interval == 0:
-                            # Generate samples
-                            if hasattr(gan_model, 'generate'):
-                                samples = gan_model.generate(num_samples=4)
-                                generated_samples_list.append({
-                                    'epoch': epoch,
-                                    'samples': samples
-                                })
                     
                     training_results = {
                         'epochs_completed': epochs,
-                        'final_metrics': metrics,
+                        'ff_results': ff_results,
                         'training_success': True
                     }
+                    
+                # Handle CAFO training
+                elif training_algorithm == 'cafo' and hasattr(gan_model.trainer, 'train_cafo'):
+                    print('Starting CAFO training...')
+                    cafo_results = gan_model.trainer.train_cafo(
+                        dataloader=train_loader,
+                        verbose=True
+                    )
+                    
+                    # Then do regular training
+                    print('Starting main training after CAFO...')
+                    for epoch in range(epochs):
+                        metrics = gan_model.trainer.train_epoch(train_loader)
+                        if epoch % log_interval == 0:
+                            print(f'Epoch [{epoch+1}/{epochs}] - {metrics}')
+                    
+                    training_results = {
+                        'epochs_completed': epochs,
+                        'cafo_results': cafo_results,
+                        'training_success': True
+                    }
+                    
+                # Standard backprop training
                 else:
-                    raise AttributeError("Model trainer doesn't have train_epoch method")
+                    print('Starting standard training...')
+                    all_metrics = []
+                    for epoch in range(epochs):
+                        metrics = gan_model.trainer.train_epoch(train_loader)
+                        all_metrics.append(metrics)
+                        
+                        if epoch % log_interval == 0:
+                            print(f'Epoch [{epoch+1}/{epochs}] - {metrics}')
+                    
+                    training_results = {
+                        'epochs_completed': epochs,
+                        'training_history': all_metrics,
+                        'final_metrics': all_metrics[-1] if all_metrics else {},
+                        'training_success': True
+                    }
+                    
             else:
                 raise AttributeError("Model doesn't have train() method or trainer")
                 
@@ -216,23 +239,17 @@ implementation:
             print(f'Training error: {e}')
             traceback.print_exc()
             
-            # Create fallback training results
             training_results = {
                 'epochs_completed': epochs,
                 'error': str(e),
                 'training_success': False
             }
         
-        # Generate final samples
+        # Generate final samples using nesy_factory's generate method
         generated_samples = []
         try:
             if hasattr(gan_model, 'generate'):
                 num_samples = 16
-                if hasattr(gan_model, 'config') and hasattr(gan_model.config, 'image_size'):
-                    image_size = gan_model.config.image_size
-                else:
-                    image_size = 64
-                
                 samples = gan_model.generate(num_samples)
                 
                 # Convert samples to base64 for storage
@@ -263,7 +280,6 @@ implementation:
                         'sample_index': i,
                         'image_data': base64_data,
                         'filename': f'gan_sample_{i}.png',
-                        'image_size': image_size,
                         'model_type': gan_config.get('model_type', 'unknown')
                     })
                 
@@ -275,29 +291,19 @@ implementation:
             print(f'Error generating samples: {e}')
         
         # Create training history
-        if training_results:
-            training_history = {
-                'model_type': gan_config.get('model_type', 'unknown'),
-                'epochs': epochs,
-                'batch_size': batch_size,
-                'training_success': training_results.get('training_success', False),
-                'final_metrics': training_results.get('final_metrics', {}),
-                'training_time_seconds': time.time() - start_time,
-                'generated_samples_count': len(generated_samples)
-            }
-            
-            if 'training_history' in training_results:
-                training_history['history'] = training_results['training_history']
-            if 'final_metrics' in training_results:
-                training_history['final_metrics'] = training_results['final_metrics']
-        else:
-            training_history = {
-                'model_type': gan_config.get('model_type', 'unknown'),
-                'epochs': epochs,
-                'training_success': False,
-                'error': 'No training results',
-                'training_time_seconds': time.time() - start_time
-            }
+        training_history = {
+            'model_type': gan_config.get('model_type', 'unknown'),
+            'epochs': epochs,
+            'batch_size': batch_size,
+            'training_success': training_results.get('training_success', False) if training_results else False,
+            'final_metrics': training_results.get('final_metrics', {}) if training_results else {},
+            'training_time_seconds': time.time() - start_time,
+            'generated_samples_count': len(generated_samples)
+        }
+        
+        # Add training history if available
+        if training_results and 'training_history' in training_results:
+            training_history['history'] = training_results['training_history']
         
         # Create training metrics
         training_metrics_data = {
