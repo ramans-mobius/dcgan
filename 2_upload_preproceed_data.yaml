@@ -229,9 +229,9 @@ implementation:
             json.dump(dataset_metadata, f, indent=2)
         
         print('Dataset CDN Upload Summary:')
-        print(f'  Train dataset uploaded: {'Yes' if train_url else 'No'}')
-        print(f'  Test dataset uploaded: {'Yes' if test_url else 'No'}')
-        print(f'  Preprocessed dataset uploaded: {'Yes' if preprocessed_url else 'No'}')
+        print(f'  Train dataset uploaded: {"Yes" if train_url else "No"}')
+        print(f'  Test dataset uploaded: {"Yes" if test_url else "No"}')
+        print(f'  Preprocessed dataset uploaded: {"Yes" if preprocessed_url else "No"}')
         print(f'  Dataset metadata saved to: {args.dataset_metadata_path}')
     args:
       - --train_data_path
