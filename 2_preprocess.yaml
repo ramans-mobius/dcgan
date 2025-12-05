@@ -1,4 +1,4 @@
-name: Preprocess For GAN
+name: 2 Preprocess For GAN Fixed
 description: Preprocesses dataset for both DCGAN and Vanilla GAN based on model type.
 inputs:
   - name: train_data
@@ -24,11 +24,6 @@ implementation:
       - sh
       - -c
       - |
-        # Install required dependencies first
-        pip install torch torchvision pillow numpy --quiet
-        echo "Dependencies installed successfully"
-        
-        # Then run the Python script
         python -c "
         import sys, os, pickle, json, base64, io, math
         import numpy as np
@@ -39,11 +34,11 @@ implementation:
         
         print('Starting GAN Preprocessing (DCGAN or Vanilla GAN)')
         
-        # Parse arguments
+        # Parse arguments - CORRECTED ORDER
         train_data_path = sys.argv[1]
         dataset_info_path = sys.argv[2]
         data_config_str = sys.argv[3]
-        model_config_str = sys.argv[4]
+        model_config_str = sys.argv[4]  # This is model_config, not processed_data_path
         processed_data_path = sys.argv[5]
         gan_config_path = sys.argv[6]
         
@@ -65,7 +60,7 @@ implementation:
         except:
             model_config = {}
         
-        # Determine model type
+        # Determine model type - FROM PARSED CONFIG
         model_type = model_config.get('model_type', 'dcgan').lower()
         is_dcgan = model_type == 'dcgan'
         is_vanilla_gan = model_type == 'vanilla_gan'
