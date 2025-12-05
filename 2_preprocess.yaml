@@ -1,5 +1,5 @@
-name: ssss Preprocess For GAN Fixed
-description: Preprocesses dataset for both DCGAN and Vanilla GAN using nesy_factory.
+name: Preprocess For GAN Fixed
+description: Preprocesses dataset for both DCGAN and Vanilla GAN.
 inputs:
   - name: train_data
     type: Dataset
@@ -19,16 +19,23 @@ outputs:
     description: "GAN configuration for next step"
 implementation:
   container:
-    image: gurpreetgandhi/nesy-factory:v33
+    image: gurpreetgandhi/nesy-factory:v34  # UPDATED to v34
     command:
       - sh
       - -c
       - |
-        python -c "
+        # Install torchvision compatible with torch in nesy-factory
+        pip install torchvision==0.15.2 --quiet
+        echo "Torchvision installed"
+        exec "$0" "$@"
+      - python3
+      - -u
+      - -c
+      - |
         import sys, os, pickle, json, base64, io, math
         import numpy as np
         
-        print('Starting GAN Preprocessing with nesy_factory')
+        print('Starting GAN Preprocessing')
         
         # Parse arguments
         train_data_path = sys.argv[1]
@@ -62,21 +69,6 @@ implementation:
         print('Processing for ' + model_type.upper() + ' GAN')
         print('Loaded ' + str(len(train_data)) + ' samples')
         
-        # Use nesy_factory create_default_transforms
-        try:
-            from nesy_factory.GANs import create_default_transforms
-            print('Imported nesy_factory GAN transforms')
-        except ImportError as e:
-            print(f'Error importing nesy_factory: {e}')
-            # Fallback
-            import torchvision.transforms as transforms
-            create_default_transforms = lambda size: transforms.Compose([
-                transforms.Resize(size),
-                transforms.CenterCrop(size),
-                transforms.ToTensor(),
-                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-            ])
-        
         # Get parameters
         image_size = model_config.get('image_size', data_config.get('image_size', 64))
         channels = data_config.get('channels', 3)
@@ -86,6 +78,16 @@ implementation:
         print('  Model Type: ' + model_type.upper())
         print('  Channels: ' + str(channels))
         print('  Target Size: ' + str(target_size))
+        
+        # Import torch and torchvision
+        try:
+            import torch
+            import torchvision.transforms as transforms
+            print(f'Torch version: {torch.__version__}')
+            print('Imported torch and torchvision')
+        except ImportError as e:
+            print(f'Error importing torch/torchvision: {e}')
+            raise
         
         # Define dataset class
         class GANDataset:
@@ -104,7 +106,6 @@ implementation:
                 try:
                     img_data = base64.b64decode(item['image_data'])
                     from PIL import Image
-                    import torch
                     
                     img = Image.open(io.BytesIO(img_data))
                     
@@ -119,11 +120,23 @@ implementation:
                     return img
                 except Exception as e:
                     print('Error processing image ' + str(idx) + ': ' + str(e))
-                    import torch
                     return torch.zeros(self.channels, self.target_size, self.target_size)
         
-        # Create transform using nesy_factory
-        transform = create_default_transforms(target_size)
+        # Create transform
+        if channels == 1:
+            transform = transforms.Compose([
+                transforms.Resize(target_size),
+                transforms.CenterCrop(target_size),
+                transforms.ToTensor(),
+                transforms.Normalize((0.5,), (0.5,))
+            ])
+        else:
+            transform = transforms.Compose([
+                transforms.Resize(target_size),
+                transforms.CenterCrop(target_size),
+                transforms.ToTensor(),
+                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+            ])
         
         # Create dataset
         dataset = GANDataset(train_data, transform, model_type, target_size, channels)
@@ -150,8 +163,9 @@ implementation:
         os.makedirs(os.path.dirname(processed_data_path) or '.', exist_ok=True)
         with open(processed_data_path, 'wb') as f:
             pickle.dump(data_wrapper, f)
+        print(f'Saved processed data to: {processed_data_path}')
         
-        # Create GAN configuration compatible with nesy_factory
+        # Create GAN configuration
         if model_type == 'vanilla_gan':
             gan_config = {
                 'model_type': 'vanilla_gan',
@@ -163,7 +177,7 @@ implementation:
                 'learning_rate': model_config.get('learning_rate', 0.0002),
                 'epochs': model_config.get('epochs', 50),
                 'training_algorithm': model_config.get('training_algorithm', 'backprop'),
-                'device': 'cuda' if hasattr(__builtins__, '__import__') and __import__('torch').cuda.is_available() else 'cpu'
+                'device': 'cuda' if torch.cuda.is_available() else 'cpu'
             }
         else:
             gan_config = {
@@ -171,26 +185,26 @@ implementation:
                 'image_size': target_size,
                 'channels': channels,
                 'latent_dim': model_config.get('latent_dim', 100),
-                'generator_layers': model_config.get('generator_layers', []),  # Let DCGANConfig set defaults
-                'discriminator_layers': model_config.get('discriminator_layers', []),
+                'generator_layers': model_config.get('generator_layers', [512, 256, 128, 64]),
+                'discriminator_layers': model_config.get('discriminator_layers', [64, 128, 256, 512]),
                 'batch_size': model_config.get('batch_size', 32),
                 'learning_rate': model_config.get('learning_rate', 0.0002),
                 'epochs': model_config.get('epochs', 50),
                 'training_algorithm': model_config.get('training_algorithm', 'backprop'),
-                'device': 'cuda' if hasattr(__builtins__, '__import__') and __import__('torch').cuda.is_available() else 'cpu'
+                'device': 'cuda' if torch.cuda.is_available() else 'cpu'
             }
         
         # Save GAN config
         os.makedirs(os.path.dirname(gan_config_path) or '.', exist_ok=True)
         with open(gan_config_path, 'w') as f:
             json.dump(gan_config, f, indent=2)
+        print(f'Saved GAN config to: {gan_config_path}')
         
         print('GAN Preprocessing Complete!')
         print('  Model type: ' + model_type.upper())
         print('  Samples processed: ' + str(len(dataset)))
         print('  Image size: ' + str(target_size) + 'x' + str(target_size))
         print('  Channels: ' + str(channels))
-        " "$0" "$1" "$2" "$3" "$4" "$5" "$6"
     args:
       - {inputPath: train_data}
       - {inputPath: dataset_info}
