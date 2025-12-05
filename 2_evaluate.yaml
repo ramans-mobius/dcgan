@@ -1,4 +1,4 @@
-name: Evaluate GAN Model Comprehensive
+name: 2 Evaluate GAN Model Comprehensive
 description: Comprehensive GAN evaluation with FID, Inception Score, and visual metrics.
 inputs:
   - name: trained_model
@@ -277,7 +277,7 @@ implementation:
                 })
         
         # Create evaluation report
-        evaluation_report = f"""
+        evaluation_report = f'''
         GAN EVALUATION REPORT
         =====================
         
@@ -294,7 +294,7 @@ implementation:
         
         QUALITY ASSESSMENT:
         -------------------
-        """
+        '''
         
         # Create quality assessment
         quality_scores = {
@@ -325,14 +325,14 @@ implementation:
             quality_scores['recommendations'].append('Increase latent space exploration for better diversity')
         
         # Add quality assessment to evaluation report
-        evaluation_report += f"""
+        evaluation_report += f'''
         FID Quality: {quality_scores['fid_quality']}
         Inception Score Quality: {quality_scores['is_quality']}
         Overall Quality: {quality_scores['overall_quality']}
         
         RECOMMENDATIONS:
         ---------------
-        """
+        '''
         
         for rec in quality_scores['recommendations']:
             evaluation_report += f"- {rec}\\n"
