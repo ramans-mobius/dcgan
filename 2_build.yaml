@@ -1,5 +1,5 @@
-name: GANBuildModel
-description: Instantiates either DCGAN or VanillaGAN model using GANFactory based on configuration
+name: Model Building
+description: Instantiates either DCGAN or VanillaGAN model using nesy_factory.GANs modules
 inputs:
   - name: config_str
     type: String    
@@ -21,324 +21,220 @@ implementation:
       - -c
       - |
         pip install torchvision==0.15.2 --quiet
-        exec "$0" "$@"
-      - python3
-      - -u
-      - -c
-      - |
-        import torch
-        import argparse
-        import json
-        import os
-        import pickle
+        exec python3 -u -c "
         import sys
-        
-        parser = argparse.ArgumentParser()
-        parser.add_argument('--config_str', type=str, required=True)
-        parser.add_argument('--model_name', type=str, required=True)
-        parser.add_argument('--model_out', type=str, required=True)
-        parser.add_argument('--config_updated', type=str, required=True)
-        parser.add_argument('--model_info_out', type=str, required=True)
-        args = parser.parse_args()
+        import os
+        import json
+        import pickle
+        import traceback
 
-        print('Starting GAN Model Builder')
-        
-        # Parse configuration
-        config = json.loads(args.config_str)
+        print('GAN MODEL BUILDER')
+        print('='*60)
+
+        config_str = sys.argv[1]
+        model_name = sys.argv[2]
+        model_out_path = sys.argv[3]
+        config_updated_path = sys.argv[4]
+        model_info_out_path = sys.argv[5]
+
+        print('Building model: ' + model_name)
+
+        try:
+            config = json.loads(config_str)
+            print('Config parsed successfully')
+        except Exception as e:
+            print('Failed to parse config: ' + str(e))
+            sys.exit(1)
+
         model_config = config.get('model', {})
-        
-        # Determine model type
-        model_type = args.model_name.lower()
+        model_type = model_name.lower()
         if model_type not in ['dcgan', 'vanilla_gan']:
-            raise ValueError(f"model_name must be 'dcgan' or 'vanilla_gan', got '{model_type}'")
-        
-        print(f"Building {model_type.upper()} model...")
-        
-        # Set default values based on model type
-        if model_type == 'dcgan':
-            defaults = {
-                'image_size': 64,
-                'channels': 3,
-                'latent_dim': 100,
-                'batch_size': 128,
-                'learning_rate': 0.0002,
-                'training_algorithm': 'backprop',
-                'use_wgan': True,
-                'generator_features': 64,
-                'discriminator_features': 64,
-                'epochs': 100,
-                'n_critic': 5,
-                'device': 'cuda' if torch.cuda.is_available() else 'cpu'
-            }
-        else:  # vanilla_gan
-            defaults = {
-                'input_dim': 784,
-                'latent_dim': 100,
-                'batch_size': 64,
-                'learning_rate': 0.0002,
-                'training_algorithm': 'backprop',
-                'generator_layers': [256, 512],
-                'discriminator_layers': [512, 256],
-                'epochs': 100,
-                'device': 'cuda' if torch.cuda.is_available() else 'cpu'
-            }
-        
-        # Update model_config with defaults if not provided
-        for param, default_value in defaults.items():
-            if param not in model_config:
-                print(f"{param} not found, using default: {default_value}")
-                model_config[param] = default_value
-        
-        # Add model_type to config
+            print('Unknown model type: ' + model_type + ', defaulting to dcgan')
+            model_type = 'dcgan'
+
+        print('Model type: ' + model_type.upper())
+
         model_config['model_type'] = model_type
         config['model'] = model_config
         config['model_type'] = model_type
-        
-        # Function to safely create model with multiple import strategies
-        def create_model_safely():
-            import importlib
-            
-            # Strategy 1: Direct import from specific modules
-            print("Attempting direct imports...")
-            
+
+        try:
+            import torch
+            print('PyTorch version: ' + torch.__version__)
+            print('CUDA available: ' + str(torch.cuda.is_available()))
+        except Exception as e:
+            print('Failed to import torch: ' + str(e))
+            sys.exit(1)
+
+        model = None
+
+        try:
+            print('Importing nesy_factory.GANs modules')
+
             if model_type == 'dcgan':
                 try:
                     from nesy_factory.GANs.dcgan import DCGAN, DCGANConfig
-                    print("✓ Successfully imported DCGAN directly")
-                    
-                    # Prepare DCGAN config
+                    print('Successfully imported DCGAN modules')
+
+                    # Build DCGAN config based on your pipeline script
                     dcgan_config_dict = {
                         'image_size': model_config.get('image_size', 64),
                         'channels': model_config.get('channels', 3),
                         'latent_dim': model_config.get('latent_dim', 100),
                         'training_algorithm': model_config.get('training_algorithm', 'backprop'),
-                        'batch_size': model_config.get('batch_size', 128),
+                        'batch_size': model_config.get('batch_size', 32),
                         'learning_rate': model_config.get('learning_rate', 0.0002),
-                        'epochs': model_config.get('epochs', 100),
-                        'device': 'cuda' if torch.cuda.is_available() else 'cpu'
+                        'epochs': model_config.get('epochs', 50),
+                        'device': 'cuda' if torch.cuda.is_available() else 'cpu',
+                        'use_wgan': model_config.get('use_wgan', False),
+                        'generator_features': model_config.get('generator_features', 64),
+                        'discriminator_features': model_config.get('discriminator_features', 64),
+                        'n_critic': model_config.get('n_critic', 1),
                     }
-                    
-                    # Add optional parameters if they exist
-                    optional_params = ['use_wgan', 'generator_features', 'discriminator_features', 
-                                     'generator_layers', 'discriminator_layers', 'n_critic',
-                                     'use_forward_forward', 'use_cafo']
-                    
-                    for param in optional_params:
-                        if param in model_config:
-                            dcgan_config_dict[param] = model_config[param]
-                    
+
+                    # Add algorithm-specific parameters
+                    algorithm = model_config.get('training_algorithm', 'backprop')
+                    if algorithm == 'forward_forward':
+                        dcgan_config_dict.update({
+                            'use_forward_forward': True,
+                            'ff_blocks': model_config.get('ff_blocks', 2),
+                            'ff_epochs_per_block': model_config.get('ff_epochs_per_block', 3),
+                            'ff_theta': model_config.get('ff_theta', 1.0),
+                            'ff_goodness_fn': 'mean_squares',
+                        })
+                    elif algorithm == 'cafo':
+                        dcgan_config_dict.update({
+                            'use_cafo': True,
+                            'cafo_blocks': model_config.get('cafo_blocks', 2),
+                            'epochs_per_block': model_config.get('epochs_per_block', 3),
+                            'block_lr': model_config.get('block_lr', 0.001),
+                        })
+
+                    print('Creating DCGAN with config: ' + str(dcgan_config_dict))
                     dcgan_config = DCGANConfig(**dcgan_config_dict)
-                    return DCGAN(dcgan_config)
-                    
-                except ImportError as e:
-                    print(f"Direct DCGAN import failed: {e}")
-            else:  # vanilla_gan
+                    model = DCGAN(dcgan_config)
+                    print('DCGAN created successfully')
+
+                except Exception as e:
+                    print('DCGAN import failed: ' + str(e))
+                    traceback.print_exc()
+
+            elif model_type == 'vanilla_gan':
                 try:
                     from nesy_factory.GANs.vanilla_gan import VanillaGAN, VanillaGANConfig
-                    print("✓ Successfully imported VanillaGAN directly")
-                    
-                    # Prepare VanillaGAN config
+                    print('Successfully imported VanillaGAN modules')
+
+                    # Build VanillaGAN config based on your pipeline script
                     vanilla_config_dict = {
                         'input_dim': model_config.get('input_dim', 784),
                         'latent_dim': model_config.get('latent_dim', 100),
                         'training_algorithm': model_config.get('training_algorithm', 'backprop'),
-                        'generator_layers': model_config.get('generator_layers', [256, 512]),
-                        'discriminator_layers': model_config.get('discriminator_layers', [512, 256]),
+                        'generator_layers': model_config.get('generator_layers', [256, 512, 1024]),
+                        'discriminator_layers': model_config.get('discriminator_layers', [1024, 512, 256]),
                         'batch_size': model_config.get('batch_size', 64),
                         'lr': model_config.get('learning_rate', 0.0002),
-                        'epochs': model_config.get('epochs', 100),
-                        'device': 'cuda' if torch.cuda.is_available() else 'cpu'
+                        'epochs': model_config.get('epochs', 50),
+                        'device': 'cuda' if torch.cuda.is_available() else 'cpu',
                     }
-                    
-                    # Add optional parameters
-                    optional_params = ['use_forward_forward', 'use_cafo']
-                    for param in optional_params:
-                        if param in model_config:
-                            vanilla_config_dict[param] = model_config[param]
-                    
+
+                    # Add algorithm-specific parameters
+                    algorithm = model_config.get('training_algorithm', 'backprop')
+                    if algorithm == 'forward_forward':
+                        vanilla_config_dict.update({
+                            'use_forward_forward': True,
+                            'ff_blocks': model_config.get('ff_blocks', 3),
+                            'ff_epochs_per_block': model_config.get('ff_epochs_per_block', 100),
+                            'ff_theta': model_config.get('ff_theta', 2.0),
+                        })
+                    elif algorithm == 'cafo':
+                        vanilla_config_dict.update({
+                            'use_cafo': True,
+                            'cafo_blocks': model_config.get('cafo_blocks', 3),
+                            'epochs_per_block': model_config.get('epochs_per_block', 50),
+                            'block_lr': model_config.get('block_lr', 0.001),
+                        })
+
+                    print('Creating VanillaGAN with config: ' + str(vanilla_config_dict))
                     vanilla_config = VanillaGANConfig(**vanilla_config_dict)
-                    return VanillaGAN(vanilla_config)
-                    
-                except ImportError as e:
-                    print(f"Direct VanillaGAN import failed: {e}")
-            
-            # Strategy 2: Try factory functions
-            print("Trying factory functions...")
-            
-            # First try from factory module
-            try:
-                from nesy_factory.GANs.factory import create_gan_model
-                print("✓ Successfully imported create_gan_model from factory")
-                
-                config_dict = {
-                    'model_type': model_type,
-                    **model_config
-                }
-                return create_gan_model(model_type, config_dict)
-                
-            except ImportError as e:
-                print(f"Factory import failed: {e}")
-            
-            # Strategy 3: Try main GANs module
-            try:
-                from nesy_factory.GANs import create_gan_model
-                print("✓ Successfully imported create_gan_model from GANs")
-                
-                config_dict = {
-                    'model_type': model_type,
-                    **model_config
-                }
-                return create_gan_model(model_type, config_dict)
-                
-            except ImportError as e:
-                print(f"GANs module import failed: {e}")
-            
-            # Strategy 4: Dynamic import with importlib
-            print("Trying dynamic import...")
-            
-            try:
-                if model_type == 'dcgan':
-                    module = importlib.import_module('nesy_factory.GANs.dcgan')
-                    DCGAN = getattr(module, 'DCGAN')
-                    DCGANConfig = getattr(module, 'DCGANConfig')
-                    
-                    # Filter config to only include valid parameters
-                    dcgan_config_dict = {}
-                    for key, value in model_config.items():
-                        # Skip model_type as it's not a DCGANConfig parameter
-                        if key != 'model_type':
-                            dcgan_config_dict[key] = value
-                    
-                    dcgan_config = DCGANConfig(**dcgan_config_dict)
-                    return DCGAN(dcgan_config)
-                    
-                else:  # vanilla_gan
-                    module = importlib.import_module('nesy_factory.GANs.vanilla_gan')
-                    VanillaGAN = getattr(module, 'VanillaGAN')
-                    VanillaGANConfig = getattr(module, 'VanillaGANConfig')
-                    
-                    # Filter config
-                    vanilla_config_dict = {}
-                    for key, value in model_config.items():
-                        if key != 'model_type':
-                            vanilla_config_dict[key] = value
-                    
-                    vanilla_config = VanillaGANConfig(**vanilla_config_dict)
-                    return VanillaGAN(vanilla_config)
-                    
-            except Exception as e:
-                print(f"Dynamic import failed: {e}")
-                raise ImportError(f"Could not create {model_type.upper()} using any import strategy")
-        
-        # Create the model
-        try:
-            model = create_model_safely()
-            print(f"{model_type.upper()} model created successfully")
-            print(f"Model class: {type(model).__name__}")
-            
+                    model = VanillaGAN(vanilla_config)
+                    print('VanillaGAN created successfully')
+
+                except Exception as e:
+                    print('VanillaGAN import failed: ' + str(e))
+                    traceback.print_exc()
+
         except Exception as e:
-            print(f"Failed to create model: {e}")
-            import traceback
+            print('Failed to import nesy_factory.GANs: ' + str(e))
             traceback.print_exc()
+
+        if model is None:
+            print('Model creation failed')
             sys.exit(1)
-        
-        # Get model info
+
+        print('Testing model')
+        try:
+            if model_type == 'dcgan':
+                z = torch.randn(2, model_config.get('latent_dim', 100), 1, 1)
+            else:
+                z = torch.randn(2, model_config.get('latent_dim', 100))
+
+            if hasattr(model, 'generator'):
+                samples = model.generator(z)
+                print('Generator test passed: Output shape = ' + str(samples.shape))
+            else:
+                print('No generator found in model')
+
+        except Exception as e:
+            print('Model test failed: ' + str(e))
+
         model_info = {}
         try:
             if hasattr(model, 'get_model_info'):
                 model_info = model.get_model_info()
-            elif hasattr(model, '__dict__'):
-                # Calculate parameter counts
-                gen_params = sum(p.numel() for p in model.generator.parameters()) if hasattr(model, 'generator') else 0
-                disc_params = sum(p.numel() for p in model.discriminator.parameters()) if hasattr(model, 'discriminator') else 0
-                
+            elif hasattr(model, 'generator') and hasattr(model, 'discriminator'):
+                gen_params = sum(p.numel() for p in model.generator.parameters())
+                disc_params = sum(p.numel() for p in model.discriminator.parameters())
                 model_info = {
                     'model_type': model_type,
-                    'model_class': type(model).__name__,
                     'generator_parameters': gen_params,
                     'discriminator_parameters': disc_params,
                     'total_parameters': gen_params + disc_params,
-                    'has_generator': hasattr(model, 'generator'),
-                    'has_discriminator': hasattr(model, 'discriminator')
+                    'has_generator': True,
+                    'has_discriminator': True
                 }
-                
-                # Add config if available
-                if hasattr(model, 'config'):
-                    model_info['config'] = str(model.config)
-                    
+            else:
+                model_info = {'model_type': model_type, 'note': 'Limited info available'}
         except Exception as e:
-            print(f"Could not get detailed model info: {e}")
-            model_info = {
-                'model_type': model_type,
-                'model_class': type(model).__name__,
-                'note': 'Basic info only - detailed info failed'
-            }
-        
-        # Combine config and model_info
+            print('Could not get model info: ' + str(e))
+            model_info = {'model_type': model_type, 'error': str(e)}
+
         combined_info = {
             **model_info,
             **config,
-            'model_name': model_type,
-            'device': 'cuda' if torch.cuda.is_available() else 'cpu',
-            'pytorch_version': torch.__version__,
-            'cuda_available': torch.cuda.is_available()
+            'model_name': model_type
         }
 
-        # Create output directories
-        os.makedirs(os.path.dirname(args.model_out), exist_ok=True)
-        os.makedirs(os.path.dirname(args.config_updated), exist_ok=True)
-        os.makedirs(os.path.dirname(args.model_info_out), exist_ok=True)
+        os.makedirs(os.path.dirname(model_out_path) or '.', exist_ok=True)
+        os.makedirs(os.path.dirname(config_updated_path) or '.', exist_ok=True)
+        os.makedirs(os.path.dirname(model_info_out_path) or '.', exist_ok=True)
 
-        # Save model (pickle the whole object)
-        with open(args.model_out, 'wb') as f:
+        with open(model_out_path, 'wb') as f:
             pickle.dump(model, f)
-        print(f"Model saved to: {args.model_out}")
 
-        # Save updated config
-        with open(args.config_updated, 'w') as f:
+        with open(config_updated_path, 'w') as f:
             json.dump(config, f, indent=2)
-            
-        # Save combined info
-        with open(args.model_info_out, 'w') as f:
+
+        with open(model_info_out_path, 'w') as f:
             json.dump(combined_info, f, indent=2)
 
-        print(f"Updated config saved to: {args.config_updated}")
-        print(f"Model info saved to: {args.model_info_out}")
-        
-        # Print model summary
-        print("="*50)
-        print("MODEL SUMMARY")
-        print("="*50)
-        print(f"Model Type: {model_type.upper()}")
-        print(f"Model Class: {type(model).__name__}")
-        
-        if 'generator_parameters' in model_info:
-            print(f"Generator Parameters: {model_info['generator_parameters']:,}")
-        if 'discriminator_parameters' in model_info:
-            print(f"Discriminator Parameters: {model_info['discriminator_parameters']:,}")
-        if 'total_parameters' in model_info:
-            print(f"Total Parameters: {model_info['total_parameters']:,}")
-            
-        print(f"Training Algorithm: {model_config.get('training_algorithm', 'backprop')}")
-        print(f"Device: {'CUDA' if torch.cuda.is_available() else 'CPU'}")
-        
-        if model_type == 'dcgan':
-            print(f"Image Size: {model_config.get('image_size', 64)}")
-            print(f"Channels: {model_config.get('channels', 3)}")
-            print(f"Latent Dim: {model_config.get('latent_dim', 100)}")
-        else:
-            print(f"Input Dim: {model_config.get('input_dim', 784)}")
-            print(f"Latent Dim: {model_config.get('latent_dim', 100)}")
-            
-        print("="*50)
+        print('Model saved to: ' + model_out_path)
+        print('Updated config saved to: ' + config_updated_path)
+        print('Model info saved to: ' + model_info_out_path)
+        print('GANBuildModel completed successfully')
+        " "$1" "$2" "$3" "$4" "$5"
     args:
-      - "--model_name"
-      - {inputValue: model_name}
-      - "--config_str"
       - {inputValue: config_str}
-      - "--model_out"
+      - {inputValue: model_name}
       - {outputPath: model_out}
-      - "--config_updated"
       - {outputPath: config_updated}
-      - "--model_info_out"
       - {outputPath: model_info_out}
