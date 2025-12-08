@@ -1,4 +1,4 @@
-name: 2 Upload GAN Results To CDN
+name: Upload GAN Results To CDN
 description: Uploads GAN generated images and training results directly to CDN.
 inputs:
   - name: generated_samples
@@ -35,6 +35,7 @@ outputs:
   - name: upload_summary
     type: String
     description: "Summary of upload results"
+
 implementation:
   container:
     image: python:3.8-slim
@@ -73,17 +74,17 @@ implementation:
         with open(bearer_token_path, 'r') as f:
             bearer_token = f.read().strip()
         
-        upload_url = f"{domain}/mobius-content-service/v1.0/content/upload?filePathAccess=private&filePath=%2Fbottle%2Flimka%2Fsoda%2F"
+        upload_url = '{}/mobius-content-service/v1.0/content/upload?filePathAccess=private&filePath=%2Fbottle%2Flimka%2Fsoda%2F'.format(domain)
         
         # Function to upload file to CDN
         def upload_file_to_cdn(file_path, filename):
-            print(f'Uploading {filename}...')
+            print('Uploading {}...'.format(filename))
             
             curl_command = [
                 "curl",
                 "--location", upload_url,
-                "--header", f"Authorization: Bearer {bearer_token}",
-                "--form", f"file=@{file_path}",
+                "--header", "Authorization: Bearer {}".format(bearer_token),
+                "--form", "file=@{}".format(file_path),
                 "--fail",
                 "--show-error",
                 "--silent"
@@ -104,23 +105,23 @@ implementation:
                     print('Error: No CDN URL in response')
                     return None
                 
-                full_url = f"{get_cdn}{relative_cdn_url}"
-                print(f'Upload successful: {full_url}')
+                full_url = "{}{}".format(get_cdn, relative_cdn_url)
+                print('Upload successful: {}'.format(full_url))
                 return full_url
                 
             except subprocess.CalledProcessError as e:
-                print(f'Curl error: {e.returncode}')
-                print(f'Error output: {e.stderr}')
+                print('Curl error: {}'.format(e.returncode))
+                print('Error output: {}'.format(e.stderr))
                 return None
             except json.JSONDecodeError as e:
-                print(f'JSON parse error: {e}')
+                print('JSON parse error: {}'.format(e))
                 return None
         
         # Load generated samples
         with open(generated_samples_path, 'rb') as f:
             generated_samples = pickle.load(f)
         
-        print(f'Loaded {len(generated_samples)} generated samples')
+        print('Loaded {} generated samples'.format(len(generated_samples)))
         
         # Load configurations for metadata
         with open(gan_config_path, 'r') as f:
@@ -140,12 +141,12 @@ implementation:
                     img_data = base64.b64decode(sample['image_data'])
                     
                     # Save to temporary file
-                    temp_file = os.path.join(temp_dir, f'image_{i:03d}.png')
+                    temp_file = os.path.join(temp_dir, 'image_{:03d}.png'.format(i))
                     with open(temp_file, 'wb') as f:
                         f.write(img_data)
                     
                     # Use filename from sample or generate one
-                    filename = sample.get('filename', f'{model_type}_sample_{i:03d}.png')
+                    filename = sample.get('filename', '{}_sample_{:03d}.png'.format(model_type, i))
                     cdn_url = upload_file_to_cdn(temp_file, filename)
                     
                     if cdn_url:
@@ -160,18 +161,18 @@ implementation:
                             }
                         })
                         uploaded_count += 1
-                        print(f'Uploaded image {i+1}/{len(generated_samples)}')
+                        print('Uploaded image {}/{}'.format(i+1, len(generated_samples)))
                     else:
-                        print(f'Failed to upload image {i+1}')
+                        print('Failed to upload image {}'.format(i+1))
                         
                 except Exception as e:
-                    print(f'Error processing image {i}: {str(e)}')
+                    print('Error processing image {}: {}'.format(i, str(e)))
                     continue
         
         # Upload training metrics
         metrics_url = None
         if os.path.exists(training_metrics_path):
-            metrics_filename = f'{model_type}_training_metrics_{timestamp}.json'
+            metrics_filename = '{}_training_metrics_{}.json'.format(model_type, timestamp)
             with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as temp_file:
                 with open(training_metrics_path, 'r') as f:
                     metrics_content = f.read()
@@ -184,7 +185,7 @@ implementation:
         # Upload training history
         history_url = None
         if os.path.exists(training_history_path):
-            history_filename = f'{model_type}_training_history_{timestamp}.json'
+            history_filename = '{}_training_history_{}.json'.format(model_type, timestamp)
             with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as temp_file:
                 with open(training_history_path, 'r') as f:
                     history_content = f.read()
@@ -233,11 +234,12 @@ implementation:
             json.dump(upload_summary, f, indent=2)
         
         print('GAN Results CDN Upload Summary:')
-        print(f'  Model Type: {model_type}')
-        print(f'  Images uploaded: {uploaded_count}/{len(generated_samples)}')
-        print(f'  Metrics uploaded: {'Yes' if metrics_url else 'No'}')
-        print(f'  History uploaded: {'Yes' if history_url else 'No'}')
+        print('  Model Type: {}'.format(model_type))
+        print('  Images uploaded: {}/{}'.format(uploaded_count, len(generated_samples)))
+        print('  Metrics uploaded: {}'.format('Yes' if metrics_url else 'No'))
+        print('  History uploaded: {}'.format('Yes' if history_url else 'No'))
         print('GAN CDN Upload Complete')
+
     args:
       - --generated_samples_path
       - {inputPath: generated_samples}
