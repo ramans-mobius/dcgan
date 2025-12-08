@@ -1,4 +1,4 @@
-name: Model Building
+name: 2 Model Building
 description: Instantiates either DCGAN or VanillaGAN model using nesy_factory.GANs modules
 inputs:
   - name: config_str
@@ -38,7 +38,7 @@ implementation:
         model_info_out_path = sys.argv[5]
 
         print('Building model: ' + model_name)
-
+        print('Config: ' + config_str)
         try:
             config = json.loads(config_str)
             print('Config parsed successfully')
@@ -233,7 +233,7 @@ implementation:
         print('GANBuildModel completed successfully')
         " "$1" "$2" "$3" "$4" "$5"
     args:
-      - {inputValue: config_str}
+      - {inputPath: config_str}
       - {inputValue: model_name}
       - {outputPath: model_out}
       - {outputPath: config_updated}
