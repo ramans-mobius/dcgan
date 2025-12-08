@@ -1,26 +1,23 @@
 name: Preprocess
-description: Preprocesses dataset for both DCGAN and Vanilla GAN
+description: Preprocesses dataset for GAN and updates master config
 inputs:
   - name: train_data
     type: Dataset
   - name: dataset_info
     type: DatasetInfo
-  - name: data_config
+  - name: gan_config_json
     type: String
-    description: Data configuration from LoadDataset
-  - name: model_config
-    type: String
-    description: GAN model configuration (with 'model' key)
+    description: Master GAN configuration as JSON string
 outputs:
   - name: processed_data
     type: Dataset
-  - name: gan_config
+  - name: gan_config_base64
     type: String
-    description: GAN configuration for next step (with 'model' key)
+    description: Updated master GAN configuration (base64 encoded)
 
 implementation:
   container:
-    image: gurpreetgandhi/nesy-factory:v34
+    image: gurpreetgandhi/nesy_factory:v34
     command:
       - sh
       - -c
@@ -41,62 +38,59 @@ implementation:
         import torch
         import torchvision.transforms as transforms
         from PIL import Image
+        import time
         
         parser = argparse.ArgumentParser(description='GAN Preprocessing')
         parser.add_argument('--train_data', type=str, required=True, help='Path to train data')
         parser.add_argument('--dataset_info', type=str, required=True, help='Path to dataset info')
-        parser.add_argument('--data_config', type=str, required=True, help='Data configuration JSON string')
-        parser.add_argument('--model_config', type=str, required=True, help='Model configuration JSON string')
+        parser.add_argument('--gan_config_json', type=str, required=True, help='Master GAN config as JSON string')
         parser.add_argument('--processed_data', type=str, required=True, help='Output path for processed data')
-        parser.add_argument('--gan_config', type=str, required=True, help='Output path for GAN config')
+        parser.add_argument('--gan_config_base64', type=str, required=True, help='Output path for updated GAN config (base64)')
         args = parser.parse_args()
         
         print("GAN PREPROCESSING STARTING")
         print("="*60)
+        print(f"gan_config_json length: {len(args.gan_config_json)}")
+        print(f"gan_config_json preview: {args.gan_config_json[:200]}...")
         
-        # Load inputs
+        # Parse master config (JSON string)
+        try:
+            gan_config = json.loads(args.gan_config_json)
+            print("Master GAN config parsed successfully")
+        except json.JSONDecodeError as e:
+            print(f"Failed to parse JSON config: {e}")
+            # Create default config
+            gan_config = {
+                'pipeline_name': 'gan_pipeline',
+                'version': '1.0.0',
+                'dataset': {},
+                'model': {},
+                'training': {},
+                'evaluation': {},
+                'paths': {},
+                'metadata': {'created_at': time.strftime('%Y-%m-%dT%H:%M:%SZ')}
+            }
+        
+        # Load data
         with open(args.train_data, 'rb') as f:
             train_data = pickle.load(f)
         
         with open(args.dataset_info, 'rb') as f:
             dataset_info = pickle.load(f)
         
-        try:
-            data_config = json.loads(args.data_config)
-            print("Data config parsed successfully")
-        except Exception as e:
-            print(f"Failed to parse data config: {e}")
-            data_config = {}
-        
-        try:
-            model_config_input = json.loads(args.model_config)
-            print("Model config parsed successfully")
-        except Exception as e:
-            print(f"Failed to parse model config: {e}")
-            model_config_input = {}
-        
-        # Ensure model config has 'model' key
-        if 'model' not in model_config_input:
-            print("Warning: Model config does not have 'model' key. Creating it.")
-            model_config = {'model': model_config_input}
-        else:
-            model_config = model_config_input
-        
-        model_params = model_config.get('model', {})
-        
         print(f"Train data samples: {len(train_data)}")
-        print(f"Model type: {model_params.get('model_type', 'dcgan')}")
         
-        # Determine model type
-        model_type = model_params.get('model_type', 'dcgan').lower()
+        # Get model type from config
+        model_type = gan_config.get('model', {}).get('gan_type', 'dcgan').lower()
+        if model_type not in ['dcgan', 'vanilla_gan']:
+            model_type = 'dcgan'
         
-        # Get parameters
-        image_size = model_params.get('image_size', data_config.get('image_size', 64))
-        channels = data_config.get('channels', 3)
-        target_size = model_params.get('target_size', image_size)
+        # Get image size from config or data
+        image_size = gan_config.get('dataset', {}).get('image_size', 64)
+        channels = gan_config.get('dataset', {}).get('channels', 3)
         
         print(f"Processing for {model_type.upper()}")
-        print(f"Image size: {target_size}x{target_size}")
+        print(f"Image size: {image_size}x{image_size}")
         print(f"Channels: {channels}")
         
         # Define dataset class
@@ -133,26 +127,26 @@ implementation:
         # Create transform
         if channels == 1:
             transform = transforms.Compose([
-                transforms.Resize(target_size),
-                transforms.CenterCrop(target_size),
+                transforms.Resize(image_size),
+                transforms.CenterCrop(image_size),
                 transforms.ToTensor(),
                 transforms.Normalize((0.5,), (0.5,))
             ])
         else:
             transform = transforms.Compose([
-                transforms.Resize(target_size),
-                transforms.CenterCrop(target_size),
+                transforms.Resize(image_size),
+                transforms.CenterCrop(image_size),
                 transforms.ToTensor(),
                 transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
             ])
         
         # Create dataset
-        dataset = GANDataset(train_data, transform, model_type, target_size, channels)
+        dataset = GANDataset(train_data, transform, model_type, image_size, channels)
         
         # Calculate input dimension for vanilla GAN
         input_dim = None
         if model_type == 'vanilla_gan':
-            input_dim = target_size * target_size * channels
+            input_dim = image_size * image_size * channels
             print(f"Vanilla GAN input dimension: {input_dim}")
         
         # Create data wrapper
@@ -160,7 +154,7 @@ implementation:
             'dataset': dataset,
             'model_type': model_type,
             'input_dim': input_dim,
-            'image_size': target_size,
+            'image_size': image_size,
             'channels': channels,
             'num_samples': len(dataset),
             'is_flattened': model_type == 'vanilla_gan'
@@ -172,51 +166,40 @@ implementation:
             pickle.dump(data_wrapper, f)
         print(f"Processed data saved: {args.processed_data}")
         
-        # Create GAN configuration with 'model' key
-        gan_config_output = {'model': {}}
+        # Update master config
+        gan_config['dataset'].update({
+            'processed_samples': len(dataset),
+            'actual_image_size': image_size,
+            'actual_channels': channels,
+            'input_dim': input_dim
+        })
         
-        if model_type == 'vanilla_gan':
-            gan_config_output['model'] = {
-                'model_type': 'vanilla_gan',
-                'input_dim': input_dim,
-                'latent_dim': model_params.get('latent_dim', 100),
-                'generator_layers': model_params.get('generator_layers', [256, 512]),
-                'discriminator_layers': model_params.get('discriminator_layers', [512, 256]),
-                'batch_size': model_params.get('batch_size', 64),
-                'learning_rate': model_params.get('learning_rate', 0.0002),
-                'epochs': model_params.get('epochs', 50),
-                'training_algorithm': model_params.get('training_algorithm', 'backprop'),
-                'device': 'cuda' if torch.cuda.is_available() else 'cpu',
-                'image_size': target_size,
-                'channels': channels
-            }
-        else:
-            gan_config_output['model'] = {
-                'model_type': 'dcgan',
-                'image_size': target_size,
-                'channels': channels,
-                'latent_dim': model_params.get('latent_dim', 100),
-                'generator_layers': model_params.get('generator_layers', [512, 256, 128, 64]),
-                'discriminator_layers': model_params.get('discriminator_layers', [64, 128, 256, 512]),
-                'batch_size': model_params.get('batch_size', 32),
-                'learning_rate': model_params.get('learning_rate', 0.0002),
-                'epochs': model_params.get('epochs', 50),
-                'training_algorithm': model_params.get('training_algorithm', 'backprop'),
-                'device': 'cuda' if torch.cuda.is_available() else 'cpu'
-            }
+        gan_config['model'].update({
+            'model_type': model_type,
+            'input_dim': input_dim,
+            'image_size': image_size,
+            'channels': channels
+        })
         
-        # Save GAN config
-        os.makedirs(os.path.dirname(args.gan_config) or '.', exist_ok=True)
-        with open(args.gan_config, 'w') as f:
-            json.dump(gan_config_output, f, indent=2)
-        print(f"GAN config saved: {args.gan_config}")
+        gan_config['metadata'].update({
+            'preprocessed_at': time.strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'preprocessing_step': 'completed'
+        })
+        
+        # Encode to base64 for next bricks
+        config_json = json.dumps(gan_config)
+        config_base64 = base64.b64encode(config_json.encode('utf-8')).decode('utf-8')
+        
+        # Save base64 config
+        os.makedirs(os.path.dirname(args.gan_config_base64) or '.', exist_ok=True)
+        with open(args.gan_config_base64, 'w') as f:
+            f.write(config_base64)
         
         print("="*60)
-        print("GAN Preprocessing Complete!")
-        print(f"  Model type: {model_type.upper()}")
-        print(f"  Samples processed: {len(dataset)}")
-        print(f"  Image size: {target_size}x{target_size}")
-        print(f"  Channels: {channels}")
+        print("PreprocessForGAN completed successfully")
+        print(f"Processed data: {args.processed_data}")
+        print(f"Config (base64) saved: {args.gan_config_base64}")
+        print(f"Config size: {len(config_base64)} bytes")
         print("="*60)
 
     args:
@@ -224,11 +207,9 @@ implementation:
       - {inputPath: train_data}
       - --dataset_info
       - {inputPath: dataset_info}
-      - --data_config
-      - {inputPath: data_config}
-      - --model_config
-      - {inputValue: model_config}
+      - --gan_config_json
+      - {inputValue: gan_config_json}
       - --processed_data
       - {outputPath: processed_data}
-      - --gan_config
-      - {outputPath: gan_config}
+      - --gan_config_base64
+      - {outputPath: gan_config_base64}
