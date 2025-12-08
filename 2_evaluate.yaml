@@ -1,4 +1,4 @@
-name: GANEvaluate
+name: 2 Evaluate
 description: Evaluates GAN model using nesy_factory.GANs evaluation functions
 inputs:
   - name: trained_model
