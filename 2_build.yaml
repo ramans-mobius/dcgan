@@ -1,9 +1,9 @@
 name: Build
 description: Builds GAN model using master config
 inputs:
-  - name: gan_config_base64
+  - name: gan_config_json
     type: String
-    description: Master GAN configuration (base64 encoded)
+    description: Master GAN configuration as JSON string
   - name: model_name
     type: String
     description: Model name (dcgan or vanilla_gan)
@@ -39,7 +39,7 @@ implementation:
         import sys
         
         parser = argparse.ArgumentParser(description='GAN Model Builder')
-        parser.add_argument('--gan_config_base64', type=str, required=True, help='Master GAN config (base64)')
+        parser.add_argument('--gan_config_json', type=str, required=True, help='Master GAN config as JSON string')
         parser.add_argument('--model_name', type=str, required=True, help='Model name (dcgan or vanilla_gan)')
         parser.add_argument('--model_out', type=str, required=True, help='Output path for model')
         parser.add_argument('--gan_config_base64_updated', type=str, required=True, help='Output path for updated config (base64)')
@@ -48,16 +48,16 @@ implementation:
         
         print("GAN MODEL BUILDER STARTING")
         print("="*60)
-        print(f"gan_config_base64 length: {len(args.gan_config_base64)}")
+        print(f"gan_config_json length: {len(args.gan_config_json)}")
         print(f"model_name: {args.model_name}")
         
-        # Decode base64 config
+        # Parse JSON config directly (not base64)
         try:
-            config_json = base64.b64decode(args.gan_config_base64).decode('utf-8')
-            gan_config = json.loads(config_json)
-            print("Master GAN config decoded successfully")
+            gan_config = json.loads(args.gan_config_json)
+            print("Master GAN config parsed successfully")
         except Exception as e:
-            print(f"Failed to decode base64 config: {e}")
+            print(f"Failed to parse JSON config: {e}")
+            traceback.print_exc()
             sys.exit(1)
         
         model_config = gan_config.get('model', {})
@@ -163,7 +163,7 @@ implementation:
             'config': model_config
         }
         
-        # Encode updated config to base64
+        # Encode updated config to base64 for next bricks
         updated_config_json = json.dumps(gan_config)
         updated_config_base64 = base64.b64encode(updated_config_json.encode('utf-8')).decode('utf-8')
         
@@ -188,8 +188,8 @@ implementation:
         print("="*60)
 
     args:
-      - --gan_config_base64
-      - {inputPath: gan_config_base64}
+      - --gan_config_json
+      - {inputValue: gan_config_json}
       - --model_name
       - {inputValue: model_name}
       - --model_out
