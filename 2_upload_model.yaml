@@ -1,4 +1,4 @@
-name: 2 Upload GAN Model to CDN
+name: Upload GAN Model to CDN
 description: Uploads trained GAN model as .pt file to CDN with metadata.
 inputs:
   - name: trained_model
@@ -6,7 +6,7 @@ inputs:
     description: "Trained model from Train GAN Model Enhanced component"
   - name: gan_config
     type: String
-    description: "GAN configuration from Preprocess For GAN component"
+    description: "GAN configuration JSON string (pipeline parameter)"
   - name: training_metrics
     type: String
     description: "Training metrics from Train GAN Model Enhanced component"
@@ -69,7 +69,7 @@ implementation:
         parser = argparse.ArgumentParser()
         parser.add_argument('--trained_model_path', type=str, required=True)
         parser.add_argument('--gan_config', type=str, required=True)
-        parser.add_argument('--training_metrics', type=str, required=True)
+        parser.add_argument('--training_metrics_path', type=str, required=True)
         parser.add_argument('--bearer_token', type=str, required=True)
         parser.add_argument('--domain', type=str, required=True)
         parser.add_argument('--get_cdn', type=str, required=True)
@@ -82,7 +82,7 @@ implementation:
         print('=== DEBUG: Input Values ===')
         print(f"1. trained_model_path: {args.trained_model_path}")
         print(f"2. gan_config length: {len(args.gan_config)} chars")
-        print(f"3. training_metrics length: {len(args.training_metrics)} chars")
+        print(f"3. training_metrics_path: {args.training_metrics_path}")
         print(f"4. bearer_token (first 50 chars): {args.bearer_token[:50] if len(args.bearer_token) > 50 else args.bearer_token}")
         print(f"5. domain: {args.domain}")
         print(f"6. get_cdn: {args.get_cdn}")
@@ -91,7 +91,7 @@ implementation:
         
         print('Starting GAN Model CDN Upload')
         
-        # Parse JSON strings directly
+        # Parse JSON config
         try:
             gan_config = json.loads(args.gan_config)
             print("Successfully parsed gan_config JSON")
@@ -99,12 +99,14 @@ implementation:
             print(f"Error parsing gan_config JSON: {e}")
             sys.exit(1)
         
+        # Load training metrics
         try:
-            training_metrics = json.loads(args.training_metrics)
-            print("Successfully parsed training_metrics JSON")
-        except json.JSONDecodeError as e:
-            print(f"Error parsing training_metrics JSON: {e}")
-            sys.exit(1)
+            with open(args.training_metrics_path, 'r') as f:
+                training_metrics = json.load(f)
+            print("Successfully loaded training_metrics")
+        except Exception as e:
+            print(f"Error loading training_metrics: {e}")
+            training_metrics = {}
         
         bearer_token = args.bearer_token.strip()
         
@@ -157,13 +159,13 @@ implementation:
         try:
             with open(args.trained_model_path, 'rb') as f:
                 gan_model = pickle.load(f)
-            print("Successfully loaded trained model")
+            print(f"Successfully loaded trained model: {type(gan_model).__name__}")
         except Exception as e:
             print(f"Error loading trained model: {e}")
             sys.exit(1)
         
         # Create model metadata
-        model_type = gan_config.get('model_type', 'dcgan')
+        model_type = gan_config.get('model', {}).get('gan_type', 'dcgan')
         timestamp = time.strftime('%Y%m%d_%H%M%S')
         base_filename = f"{args.model_name}_{model_type}_{timestamp}"
         
@@ -257,8 +259,11 @@ implementation:
             'model_info': {
                 'has_generator': model_data['generator_state_dict'] is not None,
                 'has_discriminator': model_data['discriminator_state_dict'] is not None,
-                'training_epochs': training_metrics.get('total_epochs', 0),
-                'final_metrics': training_metrics.get('final_metrics', {})
+                'training_epochs': training_metrics.get('epochs_completed', 0),
+                'final_metrics': {
+                    'final_generator_loss': training_metrics.get('final_generator_loss', 0),
+                    'final_discriminator_loss': training_metrics.get('final_discriminator_loss', 0)
+                }
             }
         }
         
@@ -290,8 +295,8 @@ implementation:
       - {inputPath: trained_model}
       - --gan_config
       - {inputValue: gan_config}
-      - --training_metrics
-      - {inputValue: training_metrics}
+      - --training_metrics_path
+      - {inputPath: training_metrics}
       - --bearer_token
       - {inputValue: bearer_token}
       - --domain
