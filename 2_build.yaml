@@ -1,4 +1,4 @@
-name: Build
+name: 2 Build
 description: Builds GAN model using master config
 inputs:
   - name: gan_config_json
@@ -18,7 +18,7 @@ outputs:
 
 implementation:
   container:
-    image: gurpreetgandhi/nesy-factory:v34
+    image: gurpreetgandhi/nesy-factory:v35
     command:
       - sh
       - -c
