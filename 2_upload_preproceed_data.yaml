@@ -1,4 +1,4 @@
-name: 2 Upload Preprocessed Dataset to CDN
+name: Upload Preprocessed Dataset to CDN
 description: Uploads preprocessed train and test datasets as .pkl files to CDN.
 inputs:
   - name: train_data
