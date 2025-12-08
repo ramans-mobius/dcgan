@@ -45,8 +45,7 @@ implementation:
                 self.model_type = config.get('model', {}).get('gan_type', 'dcgan').lower()
                 self.training_algorithm = config.get('model', {}).get('training_algorithm', 'backprop')
                 
-            def create_continual_tasks(self, num_tasks=3, strategy='temporal_split'):
-                """Create continual learning tasks for GAN"""
+            def create_continual_tasks(self, num_tasks=3, strategy='temporal_split'):   
                 
                 if strategy == 'temporal_split':
                     return self._temporal_split(num_tasks)
@@ -58,7 +57,7 @@ implementation:
                     return self._temporal_split(num_tasks)
             
             def _temporal_split(self, num_tasks):
-                """Split data temporally (by time/sequence)"""
+           
                 tasks = []
                 dataset = self.data['dataset']
                 total_samples = len(dataset)
@@ -89,7 +88,7 @@ implementation:
                 return tasks
             
             def _class_split(self, num_tasks):
-                """Split data by class labels (if available)"""
+           
                 tasks = []
                 dataset = self.data['dataset']
                 
@@ -164,7 +163,7 @@ implementation:
                 return tasks
             
             def _domain_split(self, num_tasks):
-                """Split data by domain (simulated)"""
+          
                 tasks = []
                 dataset = self.data['dataset']
                 total_samples = len(dataset)
@@ -204,7 +203,7 @@ implementation:
                 return tasks
             
             def _create_task_config(self, task_id, num_samples):
-                """Create task-specific configuration"""
+
                 base_config = self.config.copy()
                 
                 # Modify configuration for this task
