@@ -47,7 +47,6 @@ implementation:
         # =============================================================================
         
         class GANDataset(Dataset):
-            """GAN Dataset class - MUST MATCH THE ONE IN PREPROCESS BRICK"""
             def __init__(self, data_list, transform=None, model_type='dcgan', target_size=64, channels=3):
                 self.data_list = data_list
                 self.transform = transform
