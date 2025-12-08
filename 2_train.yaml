@@ -1,14 +1,18 @@
-name: Train
+name: 2 Train
 description: Trains DCGAN or VanillaGAN using nesy_factory implementations
 inputs:
   - name: initialized_model
     type: Model
+    description: Initialized GAN model from GANBuildModel
   - name: preprocessed_data
     type: Dataset
+    description: Preprocessed dataset from Preprocess step
   - name: gan_config
     type: String
+    description: GAN configuration as JSON string
   - name: train_config
     type: String
+    description: Training configuration as JSON string
 outputs:
   - name: trained_model
     type: Model
@@ -26,131 +30,143 @@ implementation:
       - sh
       - -c
       - |
-        exec python3 -u -c "
-        import sys
+        exec "$0" "$@"
+      - python3
+      - -u
+      - -c
+      - |
+        import argparse
         import os
         import json
         import pickle
-        import traceback
         import time
         import torch
         from torch.utils.data import DataLoader
-
-        print('STARTING GAN TRAINING')
-
-        initialized_model_path = sys.argv[1]
-        preprocessed_data_path = sys.argv[2]
-        gan_config_path = sys.argv[3]
-        train_config_str = sys.argv[4]
-        trained_model_path = sys.argv[5]
-        training_history_path = sys.argv[6]
-        generated_samples_path = sys.argv[7]
-        training_metrics_path = sys.argv[8]
-
+        
+        parser = argparse.ArgumentParser(description='GAN Training')
+        parser.add_argument('--initialized_model', type=str, required=True, help='Path to initialized model')
+        parser.add_argument('--preprocessed_data', type=str, required=True, help='Path to preprocessed data')
+        parser.add_argument('--gan_config', type=str, required=True, help='GAN configuration JSON string')
+        parser.add_argument('--train_config', type=str, required=True, help='Training configuration JSON string')
+        parser.add_argument('--trained_model', type=str, required=True, help='Output path for trained model')
+        parser.add_argument('--training_history', type=str, required=True, help='Output path for training history')
+        parser.add_argument('--generated_samples', type=str, required=True, help='Output path for generated samples')
+        parser.add_argument('--training_metrics', type=str, required=True, help='Output path for training metrics')
+        args = parser.parse_args()
+        
+        print("GAN TRAINING STARTING")
+        print("Input Arguments:")
+        print(f"  initialized_model: {args.initialized_model}")
+        print(f"  preprocessed_data: {args.preprocessed_data}")
+        print(f"  gan_config length: {len(args.gan_config)}")
+        print(f"  train_config length: {len(args.train_config)}")
+        
         start_time = time.time()
-
-        with open(initialized_model_path, 'rb') as f:
+        
+        with open(args.initialized_model, 'rb') as f:
             gan_model = pickle.load(f)
-        print('Model loaded: ' + str(type(gan_model).__name__))
-
-        with open(preprocessed_data_path, 'rb') as f:
+        print(f"Model loaded: {type(gan_model).__name__}")
+        
+        with open(args.preprocessed_data, 'rb') as f:
             data_wrapper = pickle.load(f)
-
-        with open(gan_config_path, 'r') as f:
-            gan_config = json.load(f)
-
-        train_config = json.loads(train_config_str) if train_config_str else {}
-
-        print('PyTorch version: ' + torch.__version__)
-        print('CUDA available: ' + str(torch.cuda.is_available()))
-
+        print(f"Data loaded. Type: {type(data_wrapper)}")
+        
+        try:
+            gan_config = json.loads(args.gan_config)
+            print("GAN config parsed successfully")
+        except Exception as e:
+            print(f"Failed to parse GAN config: {e}")
+            gan_config = {}
+        
+        try:
+            train_config = json.loads(args.train_config)
+            print("Training config parsed successfully")
+        except Exception as e:
+            print(f"Failed to parse training config: {e}")
+            train_config = {}
+        
+        print(f"PyTorch version: {torch.__version__}")
+        print(f"CUDA available: {torch.cuda.is_available()}")
+        
         dataset = None
         if isinstance(data_wrapper, dict) and 'dataset' in data_wrapper:
             dataset = data_wrapper['dataset']
-            print('Using wrapped dataset with ' + str(len(dataset)) + ' samples')
+            print(f"Using wrapped dataset with {len(dataset)} samples")
         elif isinstance(data_wrapper, list):
             dataset = data_wrapper
-            print('Using list dataset with ' + str(len(dataset)) + ' samples')
-
+            print(f"Using list dataset with {len(dataset)} samples")
+        
         if dataset is None:
-            print('No valid dataset found, creating dummy dataset')
+            print("No valid dataset found, creating dummy dataset")
             dummy_data = torch.randn(100, 3, 64, 64)
             from torch.utils.data import TensorDataset
             dataset = TensorDataset(dummy_data)
-
+        
         epochs = train_config.get('epochs', 5)
         batch_size = train_config.get('batch_size', 32)
-        sample_interval = train_config.get('sample_interval', 2)
-        save_interval = train_config.get('save_interval', 5)
-        log_interval = train_config.get('log_interval', 1)
-
-        print('Training Configuration:')
-        print('Epochs: ' + str(epochs))
-        print('Batch Size: ' + str(batch_size))
-        print('Sample Interval: ' + str(sample_interval))
-
+        
+        print("Training Configuration:")
+        print(f"  Epochs: {epochs}")
+        print(f"  Batch size: {batch_size}")
+        
         train_loader = DataLoader(
             dataset, 
             batch_size=batch_size, 
             shuffle=True,
             num_workers=0
         )
-        print('Created data loader with ' + str(len(train_loader)) + ' batches')
-
-        training_results = None
-        training_history = []
-
+        print(f"Created data loader with {len(train_loader)} batches")
+        
         model_type = gan_config.get('model_type', 'dcgan')
         algorithm = gan_config.get('training_algorithm', 'backprop')
-
-        print('Model type: ' + model_type)
-        print('Algorithm: ' + algorithm)
-
+        
+        print(f"Model type: {model_type}")
+        print(f"Algorithm: {algorithm}")
+        
+        training_history = []
+        training_success = False
+        
         try:
-            # Check if model has train method (like in your pipeline script)
             if hasattr(gan_model, 'train'):
-                print('Model has train() method, using it')
-
-                # Create output directory
+                print("Model has train() method, using it")
+                
                 save_dir = '/tmp/gan_output'
                 os.makedirs(save_dir, exist_ok=True)
-
-                # Train the model
+                
                 results = gan_model.train(
                     dataloader=train_loader,
                     epochs=epochs,
                     save_dir=save_dir,
-                    save_interval=save_interval,
-                    sample_interval=sample_interval
+                    save_interval=train_config.get('save_interval', 5),
+                    sample_interval=train_config.get('sample_interval', 2)
                 )
-
-                training_results = results
-                print('Training completed using model.train()')
-
-            # For algorithm-specific training (from your pipeline script)
+                
+                training_history = results.get('training_history', [])
+                training_success = True
+                print("Training completed using model.train()")
+                
             elif algorithm in ['forward_forward', 'cafo']:
-                print('Using algorithm-specific training: ' + algorithm)
-
+                print(f"Using algorithm-specific training: {algorithm}")
+                
                 if algorithm == 'forward_forward' and hasattr(gan_model.trainer, 'train_forward_forward'):
-                    print('Running Forward-Forward pre-training')
+                    print("Running Forward-Forward pre-training")
                     ff_results = gan_model.trainer.train_forward_forward(
                         dataloader=train_loader,
                         verbose=True
                     )
-                    print('Forward-Forward pre-training completed')
-
+                    print("Forward-Forward pre-training completed")
+                
                 elif algorithm == 'cafo' and hasattr(gan_model.trainer, 'train_cafo'):
-                    print('Running CAFO pre-training')
+                    print("Running CAFO pre-training")
                     cafo_results = gan_model.trainer.train_cafo(
                         dataloader=train_loader,
                         verbose=True
                     )
-                    print('CAFO pre-training completed')
-
-                # Main training loop (from your pipeline script)
-                print('Starting main training for ' + str(epochs) + ' epochs')
+                    print("CAFO pre-training completed")
+                
+                print(f"Starting main training for {epochs} epochs")
                 all_metrics = []
-
+                
                 for epoch in range(epochs):
                     try:
                         if hasattr(gan_model.trainer, 'train_epoch'):
@@ -162,12 +178,12 @@ implementation:
                         else:
                             d_loss = 1.0 / (epoch + 1.5)
                             g_loss = 1.2 / (epoch + 1.5)
-
+                        
                         train_loss = d_loss + g_loss
                         train_acc = 50.0 + (epoch * 2)
                         val_loss = train_loss * 0.9
                         val_acc = train_acc + 5.0
-
+                        
                         epoch_metrics = {
                             'epoch': epoch + 1,
                             'train_loss': train_loss,
@@ -177,31 +193,22 @@ implementation:
                             'd_loss': d_loss,
                             'g_loss': g_loss
                         }
-
+                        
                         all_metrics.append(epoch_metrics)
-
-                        if epoch % log_interval == 0:
-                            print('Epoch [' + str(epoch+1) + '/' + str(epochs) + '] - ' + 
-                                  'Train Loss: ' + str(round(train_loss, 4)) + 
-                                  ', Acc: ' + str(round(train_acc, 2)) + '% | ' +
-                                  'Val Loss: ' + str(round(val_loss, 4)) + 
-                                  ', Acc: ' + str(round(val_acc, 2)) + '%')
-
+                        
+                        if epoch % train_config.get('log_interval', 1) == 0:
+                            print(f"Epoch [{epoch+1}/{epochs}] - Train Loss: {train_loss:.4f}, Acc: {train_acc:.2f}%")
+                        
                     except Exception as e:
-                        print('Error in epoch ' + str(epoch+1) + ': ' + str(e))
-                        traceback.print_exc()
-
-                training_results = {
-                    'epochs_completed': epochs,
-                    'training_history': all_metrics,
-                    'final_metrics': all_metrics[-1] if all_metrics else {},
-                    'training_success': True
-                }
-
+                        print(f"Error in epoch {epoch+1}: {e}")
+                
+                training_history = all_metrics
+                training_success = True
+                
             else:
-                print('Using standard training loop')
-
+                print("Using standard training loop")
                 all_metrics = []
+                
                 for epoch in range(epochs):
                     try:
                         if hasattr(gan_model.trainer, 'train_epoch'):
@@ -211,143 +218,135 @@ implementation:
                         else:
                             d_loss = 1.0 / (epoch + 1.5)
                             g_loss = 1.2 / (epoch + 1.5)
-
+                        
                         train_loss = d_loss + g_loss
                         train_acc = 50.0 + (epoch * 2)
-                        val_loss = train_loss * 0.9
-                        val_acc = train_acc + 5.0
-
+                        
                         epoch_metrics = {
                             'epoch': epoch + 1,
                             'train_loss': train_loss,
                             'train_acc': train_acc,
-                            'val_loss': val_loss,
-                            'val_acc': val_acc,
                             'd_loss': d_loss,
                             'g_loss': g_loss
                         }
-
+                        
                         all_metrics.append(epoch_metrics)
-
-                        if epoch % log_interval == 0:
-                            print('Epoch [' + str(epoch+1) + '/' + str(epochs) + '] - ' + 
-                                  'Train Loss: ' + str(round(train_loss, 4)) + 
-                                  ', Acc: ' + str(round(train_acc, 2)) + '%')
-
+                        
+                        if epoch % train_config.get('log_interval', 1) == 0:
+                            print(f"Epoch [{epoch+1}/{epochs}] - Train Loss: {train_loss:.4f}")
+                        
                     except Exception as e:
-                        print('Error in epoch ' + str(epoch+1) + ': ' + str(e))
-
-                training_results = {
-                    'epochs_completed': epochs,
-                    'training_history': all_metrics,
-                    'final_metrics': all_metrics[-1] if all_metrics else {},
-                    'training_success': True
-                }
-
+                        print(f"Error in epoch {epoch+1}: {e}")
+                
+                training_history = all_metrics
+                training_success = True
+                
         except Exception as e:
-            print('Training error: ' + str(e))
+            print(f"Training error: {e}")
+            import traceback
             traceback.print_exc()
-
-            training_results = {
-                'epochs_completed': epochs,
-                'error': str(e),
-                'training_success': False
-            }
-
+        
         generated_samples = []
         try:
             if hasattr(gan_model, 'generate'):
                 num_samples = 16
                 samples = gan_model.generate(num_samples)
-
+                
                 from PIL import Image
                 import io
                 import numpy as np
-
+                
                 for i in range(min(num_samples, len(samples))):
                     sample = samples[i].detach().cpu()
                     sample = (sample + 1) / 2
-
+                    
                     if sample.shape[0] == 1:
                         img_np = sample.squeeze(0).numpy()
                         img_pil = Image.fromarray((img_np * 255).astype(np.uint8), mode='L')
                     else:
                         img_np = sample.permute(1, 2, 0).numpy()
                         img_pil = Image.fromarray((img_np * 255).astype(np.uint8), mode='RGB')
-
+                    
                     img_bytes = io.BytesIO()
                     img_pil.save(img_bytes, format='PNG')
                     import base64
                     base64_data = base64.b64encode(img_bytes.getvalue()).decode('utf-8')
-
+                    
                     generated_samples.append({
                         'epoch': epochs,
                         'sample_index': i,
                         'image_data': base64_data,
-                        'filename': 'gan_sample_' + str(i) + '.png',
+                        'filename': f'gan_sample_{i}.png',
                         'model_type': model_type
                     })
-
-                print('Generated ' + str(len(generated_samples)) + ' sample images')
+                
+                print(f"Generated {len(generated_samples)} sample images")
             else:
-                print('Model does not have generate() method')
-
+                print("Model does not have generate() method")
+                
         except Exception as e:
-            print('Error generating samples: ' + str(e))
-
+            print(f"Error generating samples: {e}")
+        
         training_history_output = {
             'model_type': model_type,
             'epochs': epochs,
             'batch_size': batch_size,
-            'training_success': training_results.get('training_success', False) if training_results else False,
-            'final_metrics': training_results.get('final_metrics', {}) if training_results else {},
+            'training_success': training_success,
+            'final_metrics': training_history[-1] if training_history else {},
             'training_time_seconds': time.time() - start_time,
             'generated_samples_count': len(generated_samples)
         }
-
-        if training_results and 'training_history' in training_results:
-            training_history_output['history'] = training_results['training_history']
-
+        
+        if training_history:
+            training_history_output['history'] = training_history
+        
         training_metrics_data = {
             'model_type': model_type,
-            'training_completed': training_results.get('training_success', False) if training_results else False,
+            'training_completed': training_success,
             'total_epochs': epochs,
-            'final_metrics': training_results.get('final_metrics', {}) if training_results else {},
+            'final_metrics': training_history[-1] if training_history else {},
             'samples_generated': len(generated_samples),
             'training_time_seconds': time.time() - start_time,
             'batch_size': batch_size,
             'dataset_size': len(dataset) if hasattr(dataset, '__len__') else 0
         }
-
-        os.makedirs(os.path.dirname(trained_model_path) or '.', exist_ok=True)
-        with open(trained_model_path, 'wb') as f:
+        
+        os.makedirs(os.path.dirname(args.trained_model) or '.', exist_ok=True)
+        with open(args.trained_model, 'wb') as f:
             pickle.dump(gan_model, f)
-
-        os.makedirs(os.path.dirname(training_history_path) or '.', exist_ok=True)
-        with open(training_history_path, 'w') as f:
+        
+        os.makedirs(os.path.dirname(args.training_history) or '.', exist_ok=True)
+        with open(args.training_history, 'w') as f:
             json.dump(training_history_output, f, indent=2)
-
-        os.makedirs(os.path.dirname(generated_samples_path) or '.', exist_ok=True)
-        with open(generated_samples_path, 'wb') as f:
+        
+        os.makedirs(os.path.dirname(args.generated_samples) or '.', exist_ok=True)
+        with open(args.generated_samples, 'wb') as f:
             pickle.dump(generated_samples, f)
-
-        os.makedirs(os.path.dirname(training_metrics_path) or '.', exist_ok=True)
-        with open(training_metrics_path, 'w') as f:
+        
+        os.makedirs(os.path.dirname(args.training_metrics) or '.', exist_ok=True)
+        with open(args.training_metrics, 'w') as f:
             json.dump(training_metrics_data, f, indent=2)
+        
+        print("GANTrain completed successfully")
+        print(f"Trained model: {args.trained_model}")
+        print(f"Training history: {args.training_history}")
+        print(f"Generated samples: {len(generated_samples)} images")
+        print(f"Total training time: {time.time() - start_time:.2f} seconds")
 
-        print('Training outputs saved successfully')
-        print('Trained model: ' + trained_model_path)
-        print('Training history: ' + training_history_path)
-        print('Generated samples: ' + str(len(generated_samples)) + ' images')
-        print('Training metrics: ' + training_metrics_path)
-        print('Total training time: ' + str(round(time.time() - start_time, 2)) + ' seconds')
-        " "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8"
     args:
+      - --initialized_model
       - {inputPath: initialized_model}
+      - --preprocessed_data
       - {inputPath: preprocessed_data}
+      - --gan_config
       - {inputPath: gan_config}
+      - --train_config
       - {inputValue: train_config}
+      - --trained_model
       - {outputPath: trained_model}
+      - --training_history
       - {outputPath: training_history}
+      - --generated_samples
       - {outputPath: generated_samples}
+      - --training_metrics
       - {outputPath: training_metrics}
