@@ -1,4 +1,4 @@
-name: Build
+name: 2 Build
 description: Builds GAN model using master config
 inputs:
   - name: gan_config_json
@@ -32,11 +32,12 @@ implementation:
       - |
         import argparse
         import os
+        import sys
         import json
         import pickle
         import base64
         import traceback
-        import sys
+        import time
         
         parser = argparse.ArgumentParser(description='GAN Model Builder')
         parser.add_argument('--gan_config_json', type=str, required=True, help='Master GAN config as JSON string')
@@ -51,7 +52,7 @@ implementation:
         print(f"gan_config_json length: {len(args.gan_config_json)}")
         print(f"model_name: {args.model_name}")
         
-        # Parse JSON config directly (not base64)
+        # Parse JSON config
         try:
             gan_config = json.loads(args.gan_config_json)
             print("Master GAN config parsed successfully")
@@ -82,8 +83,11 @@ implementation:
         
         try:
             if model_type == 'dcgan':
+                print("Importing DCGAN from nesy_factory.GANs.dcgan...")
                 from nesy_factory.GANs.dcgan import DCGAN, DCGANConfig
+                print("DCGAN imported successfully")
                 
+                # Create DCGAN config
                 dcgan_config_dict = {
                     'image_size': model_config.get('image_size', 64),
                     'channels': model_config.get('channels', 3),
@@ -93,7 +97,18 @@ implementation:
                     'learning_rate': model_config.get('learning_rate', 0.0002),
                     'epochs': model_config.get('epochs', 50),
                     'device': 'cuda' if torch.cuda.is_available() else 'cpu',
+                    'generator_features': model_config.get('generator_features', 64),
+                    'discriminator_features': model_config.get('discriminator_features', 64),
+                    'use_wgan': model_config.get('use_wgan', False),
+                    'use_forward_forward': model_config.get('use_forward_forward', False),
+                    'use_cafo': model_config.get('use_cafo', False),
                 }
+                
+                # Add any additional DCGAN-specific configs from model_config
+                for key in ['generator_layers', 'discriminator_layers', 'use_gradient_penalty', 
+                           'lambda_gp', 'n_critic', 'clip_value', 'label_smoothing']:
+                    if key in model_config:
+                        dcgan_config_dict[key] = model_config[key]
                 
                 print(f"DCGAN config created")
                 dcgan_config = DCGANConfig(**dcgan_config_dict)
@@ -101,8 +116,11 @@ implementation:
                 print("DCGAN created successfully")
                 
             elif model_type == 'vanilla_gan':
+                print("Importing VanillaGAN from nesy_factory.GANs.vanilla_gan...")
                 from nesy_factory.GANs.vanilla_gan import VanillaGAN, VanillaGANConfig
+                print("VanillaGAN imported successfully")
                 
+                # Create VanillaGAN config
                 vanilla_config_dict = {
                     'input_dim': model_config.get('input_dim', 784),
                     'latent_dim': model_config.get('latent_dim', 100),
@@ -113,11 +131,27 @@ implementation:
                     'device': 'cuda' if torch.cuda.is_available() else 'cpu',
                 }
                 
+                # Add any additional VanillaGAN-specific configs from model_config
+                for key in ['generator_layers', 'discriminator_layers', 'beta1', 'beta2',
+                           'generator_activation', 'discriminator_activation', 'generator_dropout',
+                           'discriminator_dropout', 'use_forward_forward', 'use_cafo']:
+                    if key in model_config:
+                        vanilla_config_dict[key] = model_config[key]
+                
                 print(f"VanillaGAN config created")
                 vanilla_config = VanillaGANConfig(**vanilla_config_dict)
                 model = VanillaGAN(vanilla_config)
                 print("VanillaGAN created successfully")
                 
+            else:
+                print(f"Unknown model type: {model_type}")
+                sys.exit(1)
+                
+        except ImportError as e:
+            print(f"Failed to import from nesy_factory: {e}")
+            print("Please ensure nesy_factory is properly installed with GANs module")
+            traceback.print_exc()
+            sys.exit(1)
         except Exception as e:
             print(f"Failed to create model: {e}")
             traceback.print_exc()
@@ -143,16 +177,18 @@ implementation:
             print(f"Model test warning: {e}")
         
         # Update master config
-        import time
         gan_config['model'].update({
             'model_built': True,
             'model_class': type(model).__name__,
-            'latent_dim': model_config.get('latent_dim', 100)
+            'latent_dim': model_config.get('latent_dim', 100),
+            'built_timestamp': time.strftime('%Y-%m-%dT%H:%M:%SZ'),
         })
         
         gan_config['metadata'].update({
             'built_at': time.strftime('%Y-%m-%dT%H:%M:%SZ'),
-            'build_step': 'completed'
+            'build_step': 'completed',
+            'model_created': True,
+            'model_type': model_type
         })
         
         # Create model info
@@ -160,10 +196,15 @@ implementation:
             'model_type': model_type,
             'model_name': args.model_name,
             'build_status': 'success',
-            'config': model_config
+            'model_class': type(model).__name__,
+            'latent_dim': model_config.get('latent_dim', 100),
+            'config': model_config,
+            'pytorch_version': torch.__version__,
+            'cuda_available': torch.cuda.is_available(),
+            'build_timestamp': time.strftime('%Y-%m-%dT%H:%M:%SZ')
         }
         
-        # Encode updated config to base64 for next bricks
+        # Encode updated config to base64
         updated_config_json = json.dumps(gan_config)
         updated_config_base64 = base64.b64encode(updated_config_json.encode('utf-8')).decode('utf-8')
         
