@@ -1,17 +1,24 @@
 name: Create GAN Continual Learning Tasks
 description: Splits data into multiple tasks for GAN continual learning with support for DCGAN, Vanilla GAN, and different training algorithms
 inputs:
-  - name: train_data
+  - name: trained_model
+    type: Model
+    description: Trained GAN model from Train brick
+  - name: preprocessed_data
     type: Dataset
+    description: Preprocessed dataset from Preprocess brick
+  - name: training_history
+    type: String
+    description: Training history from Train brick
   - name: gan_config_json
     type: String
     description: Master GAN configuration as JSON string
 outputs:
   - name: continual_tasks
     type: Dataset
-  - name: gan_config_updated
+  - name: continual_config
     type: String
-    description: Updated GAN configuration for continual learning
+    description: Configuration for continual learning tasks
 
 implementation:
   container:
@@ -28,20 +35,64 @@ implementation:
       - -c
       - |
         import argparse
-        import json
         import os
+        import sys
+        import json
         import pickle
         import base64
         import numpy as np
         import torch
-        from torch.utils.data import Dataset, DataLoader, Subset
+        from torch.utils.data import Dataset, Subset
+        from PIL import Image
+        import io
         import random
+        
+        # =============================================================================
+        # DEFINE GANDataset CLASS (SAME AS OTHER BRICKS)
+        # =============================================================================
+        
+        class GANDataset(Dataset):
+            """GAN Dataset class - MUST MATCH THE ONE IN PREPROCESS BRICK"""
+            def __init__(self, data_list, transform=None, model_type='dcgan', target_size=64, channels=3):
+                self.data_list = data_list
+                self.transform = transform
+                self.model_type = model_type
+                self.target_size = target_size
+                self.channels = channels
+            
+            def __len__(self):
+                return len(self.data_list)
+            
+            def __getitem__(self, idx):
+                item = self.data_list[idx]
+                try:
+                    img_data = base64.b64decode(item['image_data'])
+                    img = Image.open(io.BytesIO(img_data))
+                    
+                    if self.channels == 1 and img.mode != 'L':
+                        img = img.convert('L')
+                    elif self.channels == 3 and img.mode != 'RGB':
+                        img = img.convert('RGB')
+                    
+                    if self.transform:
+                        img = self.transform(img)
+                    
+                    return img
+                except Exception as e:
+                    print(f"Error processing image {idx}: {e}")
+                    return torch.zeros(self.channels, self.target_size, self.target_size)
+        
+        # =============================================================================
+        # CONTINUAL LEARNING TASK CREATOR
+        # =============================================================================
         
         class GANTaskSplitter:
             
-            def __init__(self, data, config):
+            def __init__(self, data, config, gan_model, training_history):
                 self.data = data
                 self.config = config
+                self.gan_model = gan_model
+                self.training_history = training_history
                 self.model_type = config.get('model', {}).get('gan_type', 'dcgan').lower()
                 self.training_algorithm = config.get('model', {}).get('training_algorithm', 'backprop')
                 
@@ -53,13 +104,15 @@ implementation:
                     return self._class_split(num_tasks)
                 elif strategy == 'domain_split':
                     return self._domain_split(num_tasks)
+                elif strategy == 'algorithm_aware_split':
+                    return self._algorithm_aware_split(num_tasks)
                 else:
                     return self._temporal_split(num_tasks)
             
             def _temporal_split(self, num_tasks):
-           
+                """Split data temporally (by index)"""
                 tasks = []
-                dataset = self.data['dataset']
+                dataset = self.data['dataset'] if isinstance(self.data, dict) else self.data
                 total_samples = len(dataset)
                 
                 # Create temporal splits
@@ -67,7 +120,7 @@ implementation:
                 
                 for task_id, indices in enumerate(split_indices):
                     # Create subset for this task
-                    task_dataset = Subset(dataset, indices)
+                    task_dataset = Subset(dataset, indices.tolist())
                     
                     # Create task-specific configuration
                     task_config = self._create_task_config(task_id, len(indices))
@@ -80,7 +133,9 @@ implementation:
                         'config': task_config,
                         'description': f'GAN Temporal Task {task_id+1}/{num_tasks}',
                         'model_type': self.model_type,
-                        'training_algorithm': self.training_algorithm
+                        'training_algorithm': self.training_algorithm,
+                        'requires_knowledge_replay': task_id > 0,
+                        'memory_size': min(100, len(indices) // 10)
                     }
                     
                     tasks.append(task_data)
@@ -88,21 +143,25 @@ implementation:
                 return tasks
             
             def _class_split(self, num_tasks):
-           
+                """Split data by class (if labels available)"""
                 tasks = []
-                dataset = self.data['dataset']
+                dataset = self.data['dataset'] if isinstance(self.data, dict) else self.data
                 
-                # Extract labels if available in data structure
-                # This assumes data is stored in a specific format with labels
                 try:
-                    # Try to get labels from dataset items
+                    # Extract labels from dataset
                     labels = []
-                    for i in range(min(100, len(dataset))):  # Sample first 100
+                    for i in range(min(1000, len(dataset))):
                         item = dataset[i]
                         if isinstance(item, tuple) and len(item) == 2:
-                            labels.append(item[1])
+                            _, label = item
+                            labels.append(label)
                         else:
-                            labels.append(0)  # Default label
+                            # Try to extract label from data structure
+                            if hasattr(item, 'get'):
+                                label = item.get('label', i % num_tasks)
+                            else:
+                                label = i % num_tasks
+                            labels.append(label)
                     
                     unique_labels = list(set(labels))
                     print(f"Found {len(unique_labels)} unique labels")
@@ -113,16 +172,22 @@ implementation:
                         for label in unique_labels:
                             label_groups[label] = []
                         
-                        # Group samples by label (limited to first 1000 for speed)
-                        for i in range(min(1000, len(dataset))):
+                        # Group samples by label
+                        for i in range(min(len(dataset), 2000)):
                             item = dataset[i]
                             if isinstance(item, tuple) and len(item) == 2:
-                                label = item[1]
-                                label_groups[label].append(i)
+                                _, label = item
+                            else:
+                                if hasattr(item, 'get'):
+                                    label = item.get('label', labels[i] if i < len(labels) else 0)
+                                else:
+                                    label = labels[i] if i < len(labels) else 0
+                            
+                            label_groups[label].append(i)
                         
                         # Distribute labels to tasks
-                        tasks_per_label = max(1, num_tasks // len(unique_labels))
                         task_id = 0
+                        tasks_per_label = max(1, num_tasks // len(unique_labels))
                         
                         for label, indices in label_groups.items():
                             if indices and task_id < num_tasks:
@@ -138,51 +203,77 @@ implementation:
                                     'description': f'GAN Class Task {task_id+1} (Label: {label})',
                                     'model_type': self.model_type,
                                     'training_algorithm': self.training_algorithm,
-                                    'label': label
+                                    'label': label,
+                                    'requires_knowledge_replay': task_id > 0,
+                                    'memory_size': min(100, len(indices) // 10)
                                 }
                                 
                                 tasks.append(task_data)
                                 task_id += 1
                         
-                        # If we have fewer tasks than requested, split remaining tasks temporally
+                        # Fill remaining tasks if needed
                         if len(tasks) < num_tasks:
-                            remaining_tasks = self._temporal_split(num_tasks - len(tasks))
-                            for task in remaining_tasks:
-                                task['task_id'] = len(tasks)
-                                task['description'] = f'GAN Temporal Task {len(tasks)+1}/{num_tasks}'
-                                tasks.append(task)
+                            remaining_indices = list(set(range(len(dataset))) - 
+                                                   set(idx for task in tasks for idx in task['indices']))
+                            for i in range(num_tasks - len(tasks)):
+                                task_id = len(tasks)
+                                split_size = len(remaining_indices) // (num_tasks - task_id)
+                                task_indices = remaining_indices[:split_size]
+                                remaining_indices = remaining_indices[split_size:]
+                                
+                                task_dataset = Subset(dataset, task_indices)
+                                task_config = self._create_task_config(task_id, len(task_indices))
+                                
+                                task_data = {
+                                    'task_id': task_id,
+                                    'dataset': task_dataset,
+                                    'indices': task_indices,
+                                    'num_samples': len(task_indices),
+                                    'config': task_config,
+                                    'description': f'GAN Task {task_id+1} (Remaining Data)',
+                                    'model_type': self.model_type,
+                                    'training_algorithm': self.training_algorithm,
+                                    'requires_knowledge_replay': task_id > 0,
+                                    'memory_size': min(100, len(task_indices) // 10)
+                                }
+                                tasks.append(task_data)
                     
                     else:
-                        # Fall back to temporal split
+                        # Not enough unique labels, use temporal split
+                        print("Not enough unique labels for class split, using temporal")
                         tasks = self._temporal_split(num_tasks)
                         
                 except Exception as e:
-                    print(f"Class split failed, using temporal: {e}")
+                    print(f"Class split failed: {e}")
+                    import traceback
+                    traceback.print_exc()
                     tasks = self._temporal_split(num_tasks)
                 
                 return tasks
             
             def _domain_split(self, num_tasks):
-          
+                """Split data by simulated domains"""
                 tasks = []
-                dataset = self.data['dataset']
+                dataset = self.data['dataset'] if isinstance(self.data, dict) else self.data
                 total_samples = len(dataset)
                 
-                # Simulate domains by splitting data into chunks and applying different transforms
+                # Simulate domains by splitting data into chunks
                 split_indices = np.array_split(range(total_samples), num_tasks)
                 
                 for task_id, indices in enumerate(split_indices):
                     # Create subset
-                    task_dataset = Subset(dataset, indices)
+                    task_dataset = Subset(dataset, indices.tolist())
                     
                     # Create domain-specific configuration
                     task_config = self._create_task_config(task_id, len(indices))
                     
-                    # Simulate domain shift by modifying config
+                    # Simulate domain shift parameters
                     domain_shift = {
                         'brightness': random.uniform(0.8, 1.2),
                         'contrast': random.uniform(0.8, 1.2),
-                        'noise_level': random.uniform(0.0, 0.1)
+                        'noise_level': random.uniform(0.0, 0.1),
+                        'blur_level': random.uniform(0.0, 0.5),
+                        'domain_id': task_id
                     }
                     task_config['domain_shift'] = domain_shift
                     
@@ -195,89 +286,234 @@ implementation:
                         'description': f'GAN Domain Task {task_id+1}/{num_tasks}',
                         'model_type': self.model_type,
                         'training_algorithm': self.training_algorithm,
-                        'domain_shift': domain_shift
+                        'domain_shift': domain_shift,
+                        'requires_knowledge_replay': task_id > 0,
+                        'memory_size': min(100, len(indices) // 10)
                     }
                     
                     tasks.append(task_data)
                 
                 return tasks
             
+            def _algorithm_aware_split(self, num_tasks):
+                """Split data based on training algorithm characteristics"""
+                tasks = []
+                dataset = self.data['dataset'] if isinstance(self.data, dict) else self.data
+                total_samples = len(dataset)
+                
+                # Algorithm-specific splitting
+                if self.training_algorithm == 'forward_forward':
+                    # For Forward-Forward, split by difficulty/complexity
+                    split_indices = np.array_split(range(total_samples), num_tasks)
+                    
+                    for task_id, indices in enumerate(split_indices):
+                        task_dataset = Subset(dataset, indices.tolist())
+                        task_config = self._create_task_config(task_id, len(indices))
+                        
+                        # Forward-Forward specific parameters
+                        task_config['ff_params'] = {
+                            'theta': 2.0 - (task_id * 0.2),  # Decrease threshold for later tasks
+                            'positive_margin': 2.0 - (task_id * 0.1),
+                            'negative_margin': 0.0 + (task_id * 0.1),
+                            'block_freeze_ratio': min(0.8, 0.3 + (task_id * 0.1))
+                        }
+                        
+                        task_data = {
+                            'task_id': task_id,
+                            'dataset': task_dataset,
+                            'indices': indices.tolist(),
+                            'num_samples': len(indices),
+                            'config': task_config,
+                            'description': f'GAN FF Task {task_id+1}/{num_tasks}',
+                            'model_type': self.model_type,
+                            'training_algorithm': 'forward_forward',
+                            'requires_knowledge_replay': True,
+                            'memory_size': min(150, len(indices) // 5)  # More memory for FF
+                        }
+                        tasks.append(task_data)
+                
+                elif self.training_algorithm == 'cafo':
+                    # For CAFO, split for sequential block training
+                    split_indices = np.array_split(range(total_samples), num_tasks)
+                    
+                    for task_id, indices in enumerate(split_indices):
+                        task_dataset = Subset(dataset, indices.tolist())
+                        task_config = self._create_task_config(task_id, len(indices))
+                        
+                        # CAFO specific parameters
+                        task_config['cafo_params'] = {
+                            'block_lr': 0.001 * (0.9 ** task_id),  # Decay learning rate
+                            'freeze_previous': True,
+                            'warmup_epochs': max(1, 5 - task_id),
+                            'block_progressive': True
+                        }
+                        
+                        task_data = {
+                            'task_id': task_id,
+                            'dataset': task_dataset,
+                            'indices': indices.tolist(),
+                            'num_samples': len(indices),
+                            'config': task_config,
+                            'description': f'GAN CAFO Task {task_id+1}/{num_tasks}',
+                            'model_type': self.model_type,
+                            'training_algorithm': 'cafo',
+                            'requires_knowledge_replay': task_id > 0,
+                            'memory_size': min(100, len(indices) // 10)
+                        }
+                        tasks.append(task_data)
+                
+                else:
+                    # For Backprop, use standard temporal split
+                    tasks = self._temporal_split(num_tasks)
+                
+                return tasks
+            
             def _create_task_config(self, task_id, num_samples):
-
+                """Create task-specific configuration"""
                 base_config = self.config.copy()
                 
                 # Modify configuration for this task
                 model_config = base_config.get('model', {})
                 training_config = base_config.get('training', {})
                 
-                # Adjust learning rate for later tasks (continual learning)
+                # Adjust parameters based on task
                 base_lr = model_config.get('learning_rate', 0.0002)
-                task_lr = base_lr * (0.9 ** task_id)  # Decay learning rate
-                model_config['learning_rate'] = task_lr
+                task_lr = base_lr * (0.9 ** task_id)  # Decay learning rate for later tasks
                 
-                # Adjust epochs for task
                 base_epochs = training_config.get('epochs', 10)
-                task_epochs = max(3, base_epochs // (task_id + 1))  # Fewer epochs for later tasks
-                training_config['epochs'] = task_epochs
+                task_epochs = max(3, base_epochs // (task_id + 1))
                 
                 # Task-specific parameters
                 task_config = {
                     'task_id': task_id,
                     'num_samples': num_samples,
-                    'model_config': model_config,
-                    'training_config': training_config,
-                    'requires_knowledge_replay': task_id > 0,  # Replay for tasks after first
+                    'learning_rate': task_lr,
+                    'epochs': task_epochs,
+                    'requires_knowledge_replay': task_id > 0,
                     'requires_regularization': task_id > 0,
-                    'memory_size': min(100, num_samples // 10)  # Memory for replay
+                    'memory_size': min(100, num_samples // 10),
+                    'elastic_weight_consolidation': task_id > 0,
+                    'gradient_episode_memory': True,
+                    'base_model_performance': {
+                        'final_g_loss': self.training_history.get('losses_g', [1.0])[-1],
+                        'final_d_loss': self.training_history.get('losses_d', [1.0])[-1],
+                        'algorithm': self.training_algorithm
+                    }
                 }
                 
                 return task_config
         
         def main():
             parser = argparse.ArgumentParser()
-            parser.add_argument('--train_data', type=str, required=True)
+            parser.add_argument('--trained_model', type=str, required=True)
+            parser.add_argument('--preprocessed_data', type=str, required=True)
+            parser.add_argument('--training_history', type=str, required=True)
             parser.add_argument('--gan_config_json', type=str, required=True)
             parser.add_argument('--continual_tasks', type=str, required=True)
-            parser.add_argument('--gan_config_updated', type=str, required=True)
+            parser.add_argument('--continual_config', type=str, required=True)
             args = parser.parse_args()
             
-            # Parse configuration
-            config = json.loads(args.gan_config_json)
+            print("GAN CONTINUAL LEARNING TASK CREATION")
+            print("="*60)
             
-            # Load training data
-            with open(args.train_data, 'rb') as f:
+            # Parse configuration
+            gan_config = json.loads(args.gan_config_json)
+            
+            # Load trained model
+            try:
+                with open(args.trained_model, 'rb') as f:
+                    gan_model = pickle.load(f)
+                print(f"Trained model loaded: {type(gan_model).__name__}")
+            except Exception as e:
+                print(f"Error loading trained model: {e}")
+                gan_model = None
+            
+            # Load preprocessed data
+            with open(args.preprocessed_data, 'rb') as f:
                 data_wrapper = pickle.load(f)
             
-            print(f"Creating GAN continual learning tasks")
-            print(f"Model type: {config.get('model', {}).get('gan_type', 'dcgan')}")
-            print(f"Training algorithm: {config.get('model', {}).get('training_algorithm', 'backprop')}")
+            print(f"Preprocessed data loaded: {type(data_wrapper)}")
             
-            # Create task splitter
-            splitter = GANTaskSplitter(data_wrapper, config)
+            # Load training history
+            with open(args.training_history, 'r') as f:
+                training_history = json.load(f)
             
-            # Get strategy from config
-            cl_config = config.get('continual_learning', {})
+            # Get continual learning parameters
+            cl_config = gan_config.get('continual_learning', {})
+            model_config = gan_config.get('model', {})
+            
+            gan_type = model_config.get('gan_type', 'dcgan')
+            algorithm = model_config.get('training_algorithm', 'backprop')
+            print(f"Creating continual tasks for {gan_type.upper()} trained with {algorithm.upper()}")
+            
+            # Get strategy and parameters
             strategy = cl_config.get('strategy', 'temporal_split')
             num_tasks = cl_config.get('num_tasks', 3)
+            memory_size = cl_config.get('memory_size', 100)
+            
+            print(f"Strategy: {strategy}, Tasks: {num_tasks}, Memory: {memory_size}")
+            
+            # Create task splitter
+            splitter = GANTaskSplitter(data_wrapper, gan_config, gan_model, training_history)
             
             # Create tasks
             tasks = splitter.create_continual_tasks(num_tasks=num_tasks, strategy=strategy)
             
-            print(f"Created {len(tasks)} GAN continual learning tasks")
+            print(f"\\nCreated {len(tasks)} continual learning tasks:")
             for task in tasks:
-                print(f"Task {task['task_id']+1}: {task['description']} - Samples: {task['num_samples']}")
+                print(f"  Task {task['task_id']+1}: {task['description']} - {task['num_samples']} samples")
                 if 'label' in task:
-                    print(f"  Label: {task['label']}")
+                    print(f"    Label: {task['label']}")
                 if 'domain_shift' in task:
-                    print(f"  Domain shift: {task['domain_shift']}")
+                    print(f"    Domain ID: {task['domain_shift']['domain_id']}")
             
-            # Update configuration
-            config['continual_learning'] = {
+            # Create continual learning configuration
+            continual_config = {
+                'gan_type': gan_type,
+                'training_algorithm': algorithm,
                 'strategy': strategy,
-                'num_tasks': num_tasks,
-                'tasks_created': True,
-                'task_descriptions': [task['description'] for task in tasks],
-                'total_samples': sum(task['num_samples'] for task in tasks)
+                'num_tasks': len(tasks),
+                'total_samples': sum(task['num_samples'] for task in tasks),
+                'memory_size': memory_size,
+                'tasks': [
+                    {
+                        'task_id': task['task_id'],
+                        'description': task['description'],
+                        'num_samples': task['num_samples'],
+                        'split_type': task.get('split_type', strategy),
+                        'requires_replay': task.get('requires_knowledge_replay', False),
+                        'memory_size': task.get('memory_size', memory_size),
+                        'model_type': task['model_type'],
+                        'algorithm': task['training_algorithm']
+                    }
+                    for task in tasks
+                ],
+                'base_model_info': {
+                    'final_g_loss': training_history.get('losses_g', [1.0])[-1],
+                    'final_d_loss': training_history.get('losses_d', [1.0])[-1],
+                    'epochs_trained': training_history.get('epochs_completed', 0),
+                    'algorithm': algorithm
+                },
+                'training_recommendations': {
+                    'learning_rate_decay': 0.9,
+                    'epochs_per_task': max(5, gan_config.get('training', {}).get('epochs', 10) // 2),
+                    'use_elastic_weight_consolidation': True,
+                    'use_gradient_episode_memory': True,
+                    'algorithm_specific': {
+                        'forward_forward': {
+                            'decrease_theta_per_task': 0.2,
+                            'increase_memory_for_later_tasks': True
+                        },
+                        'cafo': {
+                            'freeze_previous_blocks': True,
+                            'progressive_block_training': True
+                        },
+                        'backprop': {
+                            'standard_continual_learning': True,
+                            'experience_replay': True
+                        }
+                    }
+                }
             }
             
             # Save outputs
@@ -285,26 +521,29 @@ implementation:
             with open(args.continual_tasks, 'wb') as f:
                 pickle.dump(tasks, f)
             
-            # Convert updated config to base64 for compatibility
-            updated_config_json = json.dumps(config)
-            updated_config_base64 = base64.b64encode(updated_config_json.encode('utf-8')).decode('utf-8')
+            os.makedirs(os.path.dirname(args.continual_config), exist_ok=True)
+            with open(args.continual_config, 'w') as f:
+                json.dump(continual_config, f, indent=2)
             
-            os.makedirs(os.path.dirname(args.gan_config_updated), exist_ok=True)
-            with open(args.gan_config_updated, 'w') as f:
-                f.write(updated_config_base64)
-            
-            print(f"Saved {len(tasks)} tasks to {args.continual_tasks}")
-            print(f"Updated config saved to {args.gan_config_updated}")
+            print("\\nContinual Learning Configuration Created:")
+            print(f"  Strategy: {strategy}")
+            print(f"  Memory per task: {memory_size} samples")
+            print(f"  Algorithm-aware splits: {strategy == 'algorithm_aware_split'}")
+            print("="*60)
         
         if __name__ == '__main__':
             main()
 
     args:
-      - --train_data
-      - {inputPath: train_data}
+      - --trained_model
+      - {inputPath: trained_model}
+      - --preprocessed_data
+      - {inputPath: preprocessed_data}
+      - --training_history
+      - {inputPath: training_history}
       - --gan_config_json
       - {inputValue: gan_config_json}
       - --continual_tasks
       - {outputPath: continual_tasks}
-      - --gan_config_updated
-      - {outputPath: gan_config_updated}
+      - --continual_config
+      - {outputPath: continual_config}
