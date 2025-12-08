@@ -1,12 +1,12 @@
-name: 2 Upload GAN Results to CDN
+name: Upload GAN Results to CDN
 description: Uploads training history, generated images, and metrics to CDN.
 inputs:
   - name: training_history
     type: String
     description: "Training history JSON from Train GAN Model Enhanced component"
   - name: generated_images
-    type: String
-    description: "Generated images JSON array from Train GAN Model Enhanced component"
+    type: Dataset
+    description: "Generated images pickle file from Train GAN Model Enhanced component"
   - name: training_metrics
     type: String
     description: "Training metrics from Train GAN Model Enhanced component"
@@ -19,6 +19,9 @@ inputs:
   - name: get_cdn
     type: String
     description: "CDN endpoint"
+  - name: gan_config
+    type: String
+    description: "GAN configuration JSON string (pipeline parameter)"
 outputs:
   - name: history_cdn_url
     type: String
@@ -57,15 +60,17 @@ implementation:
       - -u
       - -c
       - |
-        import sys, os, subprocess, json, tempfile, time, argparse, base64
+        import sys, os, subprocess, json, pickle, tempfile, time, argparse, base64, io
+        from PIL import Image
         
         parser = argparse.ArgumentParser()
-        parser.add_argument('--training_history', type=str, required=True)
-        parser.add_argument('--generated_images', type=str, required=True)
-        parser.add_argument('--training_metrics', type=str, required=True)
+        parser.add_argument('--training_history_path', type=str, required=True)
+        parser.add_argument('--generated_images_path', type=str, required=True)
+        parser.add_argument('--training_metrics_path', type=str, required=True)
         parser.add_argument('--bearer_token', type=str, required=True)
         parser.add_argument('--domain', type=str, required=True)
         parser.add_argument('--get_cdn', type=str, required=True)
+        parser.add_argument('--gan_config', type=str, required=True)
         parser.add_argument('--history_cdn_url_path', type=str, required=True)
         parser.add_argument('--images_cdn_urls_path', type=str, required=True)
         parser.add_argument('--metrics_cdn_url_path', type=str, required=True)
@@ -73,37 +78,52 @@ implementation:
         args = parser.parse_args()
         
         print('=== DEBUG: Input Values ===')
-        print(f"1. training_history length: {len(args.training_history)} chars")
-        print(f"2. generated_images length: {len(args.generated_images)} chars")
-        print(f"3. training_metrics length: {len(args.training_metrics)} chars")
+        print(f"1. training_history_path: {args.training_history_path}")
+        print(f"2. generated_images_path: {args.generated_images_path}")
+        print(f"3. training_metrics_path: {args.training_metrics_path}")
         print(f"4. bearer_token (first 50 chars): {args.bearer_token[:50] if len(args.bearer_token) > 50 else args.bearer_token}")
         print(f"5. domain: {args.domain}")
         print(f"6. get_cdn: {args.get_cdn}")
+        print(f"7. gan_config length: {len(args.gan_config)} chars")
         print('===========================')
         
         print('Starting GAN Results CDN Upload')
         
-        # Parse JSON strings
+        # Parse JSON config
         try:
-            training_history = json.loads(args.training_history)
-            print("Successfully parsed training_history JSON")
+            gan_config = json.loads(args.gan_config)
+            print("Successfully parsed gan_config JSON")
         except json.JSONDecodeError as e:
-            print(f"Error parsing training_history JSON: {e}")
+            print(f"Error parsing gan_config JSON: {e}")
+            print(f"Raw gan_config: {args.gan_config}")
             sys.exit(1)
         
+        # Load training history
         try:
-            generated_images = json.loads(args.generated_images)
-            print(f"Successfully parsed generated_images JSON, found {len(generated_images)} images")
-        except json.JSONDecodeError as e:
-            print(f"Error parsing generated_images JSON: {e}")
-            sys.exit(1)
+            with open(args.training_history_path, 'r') as f:
+                training_history = json.load(f)
+            print("Successfully loaded training_history")
+        except Exception as e:
+            print(f"Error loading training_history: {e}")
+            training_history = {}
         
+        # Load training metrics
         try:
-            training_metrics = json.loads(args.training_metrics)
-            print("Successfully parsed training_metrics JSON")
-        except json.JSONDecodeError as e:
-            print(f"Error parsing training_metrics JSON: {e}")
-            sys.exit(1)
+            with open(args.training_metrics_path, 'r') as f:
+                training_metrics = json.load(f)
+            print("Successfully loaded training_metrics")
+        except Exception as e:
+            print(f"Error loading training_metrics: {e}")
+            training_metrics = {}
+        
+        # Load generated images
+        try:
+            with open(args.generated_images_path, 'rb') as f:
+                generated_images = pickle.load(f)
+            print(f"Successfully loaded generated_images: {len(generated_images)} images")
+        except Exception as e:
+            print(f"Error loading generated_images: {e}")
+            generated_images = []
         
         bearer_token = args.bearer_token.strip()
         
@@ -178,41 +198,28 @@ implementation:
             
             for i, image_data in enumerate(generated_images):
                 try:
-                    # Handle escaped JSON strings
-                    if isinstance(image_data, str) and image_data.startswith('"') and image_data.endswith('"'):
-                        image_data = image_data[1:-1]  # Remove quotes
-                        image_data = image_data.encode('utf-8')
-                    
-                    # If it's base64 encoded
-                    if isinstance(image_data, str):
-                        # Handle escaped characters
-                        image_data = image_data.encode('utf-8')
-                    
-                    image_filename = f'generated_image_{timestamp}_{i+1}.png'
-                    image_file_path = os.path.join(temp_dir, image_filename)
-                    
-                    # Try to decode base64 if needed
-                    try:
-                        decoded_data = base64.b64decode(image_data)
+                    # Extract image data from the sample dict
+                    if isinstance(image_data, dict) and 'image_data' in image_data:
+                        img_base64 = image_data['image_data']
+                        
+                        # Decode base64
+                        img_bytes = base64.b64decode(img_base64)
+                        image_filename = f'generated_image_{timestamp}_{i+1}.png'
+                        image_file_path = os.path.join(temp_dir, image_filename)
+                        
+                        # Save image
                         with open(image_file_path, 'wb') as f:
-                            f.write(decoded_data)
-                    except:
-                        # If not base64, try to write as binary directly
-                        with open(image_file_path, 'wb') as f:
-                            if isinstance(image_data, str):
-                                f.write(image_data.encode('utf-8'))
-                            else:
-                                f.write(image_data)
-                    
-                    # Upload image
-                    img_url = upload_file_to_cdn(image_file_path, image_filename)
-                    if img_url:
-                        image_urls.append({
-                            'index': i+1,
-                            'filename': image_filename,
-                            'url': img_url
-                        })
-                        print(f"Uploaded image {i+1}/{len(generated_images)}")
+                            f.write(img_bytes)
+                        
+                        # Upload image
+                        img_url = upload_file_to_cdn(image_file_path, image_filename)
+                        if img_url:
+                            image_urls.append({
+                                'index': i+1,
+                                'filename': image_filename,
+                                'url': img_url
+                            })
+                            print(f"Uploaded image {i+1}/{len(generated_images)}")
                         
                 except Exception as e:
                     print(f"Error processing image {i+1}: {e}")
@@ -260,18 +267,20 @@ implementation:
         print('====================================')
 
     args:
-      - --training_history
-      - {inputValue: training_history}
-      - --generated_images
-      - {inputValue: generated_images}
-      - --training_metrics
-      - {inputValue: training_metrics}
+      - --training_history_path
+      - {inputPath: training_history}
+      - --generated_images_path
+      - {inputPath: generated_images}
+      - --training_metrics_path
+      - {inputPath: training_metrics}
       - --bearer_token
       - {inputValue: bearer_token}
       - --domain
       - {inputValue: domain}
       - --get_cdn
       - {inputValue: get_cdn}
+      - --gan_config
+      - {inputValue: gan_config}
       - --history_cdn_url_path
       - {outputPath: history_cdn_url}
       - --images_cdn_urls_path
