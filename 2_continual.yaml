@@ -1,4 +1,4 @@
-name: Create GAN Continual Learning Tasks
+name: 2 Create GAN Continual Learning Tasks
 description: Splits data into multiple tasks for GAN continual learning with support for DCGAN, Vanilla GAN, and different training algorithms
 inputs:
   - name: trained_model
@@ -22,7 +22,7 @@ outputs:
 
 implementation:
   container:
-    image: gurpreetgandhi/nesy-factory:v34
+    image: gurpreetgandhi/nesy-factory:v35
     command:
       - sh
       - -c
