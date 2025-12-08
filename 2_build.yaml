@@ -1,9 +1,9 @@
-name: 2 Model Building
+name: Build
 description: Instantiates either DCGAN or VanillaGAN model using nesy_factory.GANs modules
 inputs:
   - name: config_str
     type: String
-    description: Model configuration as JSON string
+    description: Model configuration as JSON string (may be base64 encoded)
   - name: model_name
     type: String
     description: GAN model architecture name (dcgan or vanilla_gan)
@@ -22,6 +22,9 @@ implementation:
       - sh
       - -c
       - |
+        # Install torchvision first
+        pip install torchvision==0.15.2 --quiet
+        echo "Torchvision installed"
         exec "$0" "$@"
       - python3
       - -u
@@ -32,10 +35,11 @@ implementation:
         import json
         import pickle
         import traceback
-        import torch
+        import sys
+        import base64
         
         parser = argparse.ArgumentParser(description='GAN Model Builder')
-        parser.add_argument('--config_str', type=str, required=True, help='JSON configuration string')
+        parser.add_argument('--config_str', type=str, required=True, help='JSON configuration string (may be base64 encoded)')
         parser.add_argument('--model_name', type=str, required=True, help='Model name (dcgan or vanilla_gan)')
         parser.add_argument('--model_out', type=str, required=True, help='Output path for model')
         parser.add_argument('--config_updated', type=str, required=True, help='Output path for updated config')
@@ -43,51 +47,105 @@ implementation:
         args = parser.parse_args()
         
         print("GAN MODEL BUILDER STARTING")
+        print("="*60)
         print("Input Arguments:")
         print(f"  model_name: {args.model_name}")
         print(f"  config_str length: {len(args.config_str)}")
+        print(f"  config_str first 100 chars: {args.config_str[:100]}")
         print(f"  model_out: {args.model_out}")
         print(f"  config_updated: {args.config_updated}")
         print(f"  model_info_out: {args.model_info_out}")
+        print("="*60)
         
+        # Try to decode config_str - it might be base64 encoded
+        config = {}
+        config_str = args.config_str
+        
+        print("\\nAttempting to parse configuration...")
+        
+        # Try 1: Parse as direct JSON
         try:
-            config = json.loads(args.config_str)
-            print("Config parsed successfully")
-        except json.JSONDecodeError as e:
-            print(f"Failed to parse config as JSON: {e}")
-            print(f"config_str content (first 500 chars): {args.config_str[:500]}")
-            if os.path.exists(args.config_str):
-                print(f"config_str appears to be a file path, trying to read from file")
-                try:
-                    with open(args.config_str, 'r') as f:
-                        config = json.load(f)
-                    print(f"Config loaded from file: {args.config_str}")
-                except Exception as e2:
-                    print(f"Failed to load from file: {e2}")
-                    config = {}
-            else:
-                config = {}
-        except Exception as e:
-            print(f"Unexpected error parsing config: {e}")
-            traceback.print_exc()
-            config = {}
+            config = json.loads(config_str)
+            print("Success: Config parsed as direct JSON")
+        except json.JSONDecodeError:
+            print("Failed: Not a direct JSON string")
+            
+            # Try 2: Decode as base64
+            try:
+                decoded_bytes = base64.b64decode(config_str)
+                decoded_str = decoded_bytes.decode('utf-8')
+                config = json.loads(decoded_str)
+                print("Success: Config decoded from base64")
+            except Exception as e:
+                print(f"Failed to decode as base64: {e}")
+                
+                # Try 3: Check if it's a file path
+                if os.path.exists(config_str):
+                    try:
+                        with open(config_str, 'r') as f:
+                            config = json.load(f)
+                        print(f"Success: Config loaded from file: {config_str}")
+                    except Exception as e:
+                        print(f"Failed to load from file: {e}")
+                else:
+                    print("Config is not a valid JSON string, base64 string, or file path")
+        
+        # If still empty, create default config
+        if not config:
+            print("Creating default configuration")
+            config = {
+                'model': {
+                    'image_size': 64,
+                    'channels': 3,
+                    'latent_dim': 100,
+                    'training_algorithm': 'backprop',
+                    'batch_size': 32,
+                    'learning_rate': 0.0002,
+                    'epochs': 50
+                }
+            }
+        
+        print(f"\\nConfiguration loaded successfully")
+        print(f"Config type: {type(config)}")
+        print(f"Config keys: {list(config.keys())}")
         
         model_config = config.get('model', {})
-        model_type = args.model_name.lower()
+        print(f"Model config keys: {list(model_config.keys())}")
+        if model_config:
+            print(f"Model config values:")
+            for key, value in model_config.items():
+                print(f"  {key}: {value}")
         
+        model_type = args.model_name.lower()
         if model_type not in ['dcgan', 'vanilla_gan']:
-            print(f"Unknown model type: {model_type}, defaulting to dcgan")
+            print(f"Warning: Unknown model type: {model_type}, defaulting to dcgan")
             model_type = 'dcgan'
         
-        print(f"Building {model_type.upper()} model")
-        print(f"Model config keys: {list(model_config.keys())}")
+        print(f"\\nBuilding {model_type.upper()} model")
+        
+        # Try to import torch now
+        try:
+            import torch
+            print(f"PyTorch version: {torch.__version__}")
+            print(f"CUDA available: {torch.cuda.is_available()}")
+        except ImportError as e:
+            print(f"Failed to import torch: {e}")
+            sys.exit(1)
         
         model = None
         
         try:
             if model_type == 'dcgan':
-                from nesy_factory.GANs.dcgan import DCGAN, DCGANConfig
+                print("Importing DCGAN modules...")
+                try:
+                    from nesy_factory.GANs.dcgan import DCGAN, DCGANConfig
+                    print("Successfully imported DCGAN modules")
+                except ImportError as e:
+                    print(f"Failed to import DCGAN: {e}")
+                    traceback.print_exc()
+                    sys.exit(1)
                 
+                # Build DCGAN configuration
                 dcgan_config_dict = {
                     'image_size': model_config.get('image_size', 64),
                     'channels': model_config.get('channels', 3),
@@ -102,6 +160,7 @@ implementation:
                     'discriminator_features': model_config.get('discriminator_features', 64),
                 }
                 
+                # Add algorithm-specific parameters
                 algorithm = model_config.get('training_algorithm', 'backprop')
                 if algorithm == 'forward_forward':
                     dcgan_config_dict.update({
@@ -116,14 +175,31 @@ implementation:
                         'epochs_per_block': model_config.get('epochs_per_block', 3),
                     })
                 
-                print(f"Creating DCGAN with config: {dcgan_config_dict}")
-                dcgan_config = DCGANConfig(**dcgan_config_dict)
-                model = DCGAN(dcgan_config)
-                print("DCGAN created successfully")
+                print(f"DCGAN configuration:")
+                for key, value in dcgan_config_dict.items():
+                    print(f"  {key}: {value}")
+                
+                print("Creating DCGAN...")
+                try:
+                    dcgan_config = DCGANConfig(**dcgan_config_dict)
+                    model = DCGAN(dcgan_config)
+                    print("DCGAN created successfully")
+                except Exception as e:
+                    print(f"Failed to create DCGAN: {e}")
+                    traceback.print_exc()
+                    sys.exit(1)
                 
             elif model_type == 'vanilla_gan':
-                from nesy_factory.GANs.vanilla_gan import VanillaGAN, VanillaGANConfig
+                print("Importing VanillaGAN modules...")
+                try:
+                    from nesy_factory.GANs.vanilla_gan import VanillaGAN, VanillaGANConfig
+                    print("Successfully imported VanillaGAN modules")
+                except ImportError as e:
+                    print(f"Failed to import VanillaGAN: {e}")
+                    traceback.print_exc()
+                    sys.exit(1)
                 
+                # Build VanillaGAN configuration
                 vanilla_config_dict = {
                     'input_dim': model_config.get('input_dim', 784),
                     'latent_dim': model_config.get('latent_dim', 100),
@@ -136,6 +212,7 @@ implementation:
                     'device': 'cuda' if torch.cuda.is_available() else 'cpu',
                 }
                 
+                # Add algorithm-specific parameters
                 algorithm = model_config.get('training_algorithm', 'backprop')
                 if algorithm == 'forward_forward':
                     vanilla_config_dict.update({
@@ -150,25 +227,30 @@ implementation:
                         'epochs_per_block': model_config.get('epochs_per_block', 50),
                     })
                 
-                print(f"Creating VanillaGAN with config: {vanilla_config_dict}")
-                vanilla_config = VanillaGANConfig(**vanilla_config_dict)
-                model = VanillaGAN(vanilla_config)
-                print("VanillaGAN created successfully")
+                print(f"VanillaGAN configuration:")
+                for key, value in vanilla_config_dict.items():
+                    print(f"  {key}: {value}")
                 
-        except ImportError as e:
-            print(f"Failed to import nesy_factory.GANs: {e}")
-            traceback.print_exc()
-            sys.exit(1)
+                print("Creating VanillaGAN...")
+                try:
+                    vanilla_config = VanillaGANConfig(**vanilla_config_dict)
+                    model = VanillaGAN(vanilla_config)
+                    print("VanillaGAN created successfully")
+                except Exception as e:
+                    print(f"Failed to create VanillaGAN: {e}")
+                    traceback.print_exc()
+                    sys.exit(1)
+                    
         except Exception as e:
-            print(f"Failed to create model: {e}")
+            print(f"Unexpected error during model creation: {e}")
             traceback.print_exc()
             sys.exit(1)
         
         if model is None:
-            print("Model creation failed")
+            print("Model creation failed - model is None")
             sys.exit(1)
         
-        print("Testing model with random input")
+        print("\\nTesting model with random input...")
         try:
             if model_type == 'dcgan':
                 z = torch.randn(2, model_config.get('latent_dim', 100), 1, 1)
@@ -180,10 +262,11 @@ implementation:
                     samples = model.generator(z)
                 print(f"Generator test passed. Output shape: {samples.shape}")
             else:
-                print("No generator found in model")
+                print("Warning: No generator found in model")
         except Exception as e:
-            print(f"Model test failed: {e}")
+            print(f"Model test warning: {e}")
         
+        # Create model info
         model_info = {}
         try:
             if hasattr(model, 'generator') and hasattr(model, 'discriminator'):
@@ -194,39 +277,66 @@ implementation:
                     'generator_parameters': gen_params,
                     'discriminator_parameters': disc_params,
                     'total_parameters': gen_params + disc_params,
+                    'has_generator': True,
+                    'has_discriminator': True
                 }
             else:
-                model_info = {'model_type': model_type}
+                model_info = {
+                    'model_type': model_type,
+                    'note': 'Limited model info available'
+                }
         except Exception as e:
             print(f"Could not get model info: {e}")
             model_info = {'model_type': model_type}
         
+        # Update configuration
         config['model'] = model_config
         config['model_type'] = model_type
+        config['model_name'] = args.model_name
         
+        # Combine config and model info
         combined_info = {
             **model_info,
             **config,
-            'model_name': model_type
+            'model_name': args.model_name,
+            'build_status': 'success'
         }
         
+        # Create output directories
         os.makedirs(os.path.dirname(args.model_out) or '.', exist_ok=True)
         os.makedirs(os.path.dirname(args.config_updated) or '.', exist_ok=True)
         os.makedirs(os.path.dirname(args.model_info_out) or '.', exist_ok=True)
         
-        with open(args.model_out, 'wb') as f:
-            pickle.dump(model, f)
+        # Save model
+        try:
+            with open(args.model_out, 'wb') as f:
+                pickle.dump(model, f)
+            print(f"Model saved to: {args.model_out}")
+        except Exception as e:
+            print(f"Failed to save model: {e}")
+            sys.exit(1)
         
-        with open(args.config_updated, 'w') as f:
-            json.dump(config, f, indent=2)
+        # Save updated config
+        try:
+            with open(args.config_updated, 'w') as f:
+                json.dump(config, f, indent=2)
+            print(f"Updated config saved to: {args.config_updated}")
+        except Exception as e:
+            print(f"Failed to save config: {e}")
+            sys.exit(1)
         
-        with open(args.model_info_out, 'w') as f:
-            json.dump(combined_info, f, indent=2)
+        # Save combined info
+        try:
+            with open(args.model_info_out, 'w') as f:
+                json.dump(combined_info, f, indent=2)
+            print(f"Model info saved to: {args.model_info_out}")
+        except Exception as e:
+            print(f"Failed to save model info: {e}")
+            sys.exit(1)
         
-        print("GANBuildModel completed successfully")
-        print(f"Model saved to: {args.model_out}")
-        print(f"Updated config saved to: {args.config_updated}")
-        print(f"Model info saved to: {args.model_info_out}")
+        print("\\n" + "="*60)
+        print("GANBuildModel completed successfully!")
+        print("="*60)
 
     args:
       - --model_name
