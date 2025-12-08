@@ -1,4 +1,4 @@
-name: Train
+name: 2 Train
 description: Trains GAN model using master config with support for Backprop, Forward-Forward, and CAFO algorithms
 inputs:
   - name: initialized_model
@@ -22,7 +22,7 @@ outputs:
 
 implementation:
   container:
-    image: gurpreetgandhi/nesy-factory:v34
+    image: gurpreetgandhi/nesy-factory:v35
     command:
       - sh
       - -c
