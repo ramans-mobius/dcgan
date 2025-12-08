@@ -1,4 +1,4 @@
-name: 2 Evaluate
+name: Evaluate
 description: Evaluates GAN model using nesy_factory.GANs evaluation functions
 inputs:
   - name: trained_model
@@ -275,7 +275,7 @@ implementation:
         evaluation_report += f'Model Type: {model_type.upper()}\\n'
         evaluation_report += f'Evaluation Time: {eval_metrics["evaluation_time"]}\\n'
         evaluation_report += f'Samples Evaluated: {eval_metrics["num_samples_evaluated"]}\\n'
-        evaluation_report += '\\nQUANTITATIVE METRICS:\n'
+        evaluation_report += '\\nQUANTITATIVE METRICS:\\n'
         evaluation_report += '-'*20 + '\\n'
         evaluation_report += f'FID Score: {eval_metrics.get("fid_score", 0):.2f}\\n'
         evaluation_report += f'Inception Score: {eval_metrics.get("inception_score_mean", 0):.2f} +/- {eval_metrics.get("inception_score_std", 0):.2f}\\n'
