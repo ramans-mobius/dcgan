@@ -1,4 +1,4 @@
-name: 2 Upload GAN Results to CDN
+name: Upload GAN Results to CDN
 description: Uploads training history, generated images, and metrics to CDN.
 inputs:
   - name: training_history
@@ -11,7 +11,7 @@ inputs:
     type: String
     description: "Training metrics from Train GAN Model Enhanced component"
   - name: bearer_token
-    type: String
+    type: string
     description: "Access token from IAMLoginService component"
   - name: domain
     type: String
