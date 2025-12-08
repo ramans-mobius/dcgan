@@ -109,8 +109,7 @@ implementation:
                 else:
                     return self._temporal_split(num_tasks)
             
-            def _temporal_split(self, num_tasks):
-                """Split data temporally (by index)"""
+            def _temporal_split(self, num_tasks)
                 tasks = []
                 dataset = self.data['dataset'] if isinstance(self.data, dict) else self.data
                 total_samples = len(dataset)
@@ -143,7 +142,6 @@ implementation:
                 return tasks
             
             def _class_split(self, num_tasks):
-                """Split data by class (if labels available)"""
                 tasks = []
                 dataset = self.data['dataset'] if isinstance(self.data, dict) else self.data
                 
@@ -252,7 +250,6 @@ implementation:
                 return tasks
             
             def _domain_split(self, num_tasks):
-                """Split data by simulated domains"""
                 tasks = []
                 dataset = self.data['dataset'] if isinstance(self.data, dict) else self.data
                 total_samples = len(dataset)
@@ -296,7 +293,6 @@ implementation:
                 return tasks
             
             def _algorithm_aware_split(self, num_tasks):
-                """Split data based on training algorithm characteristics"""
                 tasks = []
                 dataset = self.data['dataset'] if isinstance(self.data, dict) else self.data
                 total_samples = len(dataset)
@@ -369,7 +365,7 @@ implementation:
                 return tasks
             
             def _create_task_config(self, task_id, num_samples):
-                """Create task-specific configuration"""
+
                 base_config = self.config.copy()
                 
                 # Modify configuration for this task
