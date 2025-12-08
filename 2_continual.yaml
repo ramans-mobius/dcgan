@@ -1,4 +1,4 @@
-name: 2 Create GAN Continual Learning Tasks
+name: Create GAN Continual Learning Tasks
 description: Splits data into multiple tasks for GAN continual learning with support for DCGAN, Vanilla GAN, and different training algorithms
 inputs:
   - name: trained_model
@@ -79,7 +79,7 @@ implementation:
                     
                     return img
                 except Exception as e:
-                    print(f"Error processing image {idx}: {e}")
+                    print("Error processing image {}: {}".format(idx, e))
                     return torch.zeros(self.channels, self.target_size, self.target_size)
         
         # =============================================================================
@@ -109,7 +109,8 @@ implementation:
                 else:
                     return self._temporal_split(num_tasks)
             
-            def _temporal_split(self, num_tasks)
+            def _temporal_split(self, num_tasks):  # FIXED: Added colon
+              
                 tasks = []
                 dataset = self.data['dataset'] if isinstance(self.data, dict) else self.data
                 total_samples = len(dataset)
@@ -130,7 +131,7 @@ implementation:
                         'indices': indices.tolist(),
                         'num_samples': len(indices),
                         'config': task_config,
-                        'description': f'GAN Temporal Task {task_id+1}/{num_tasks}',
+                        'description': 'GAN Temporal Task {}/{}'.format(task_id+1, num_tasks),
                         'model_type': self.model_type,
                         'training_algorithm': self.training_algorithm,
                         'requires_knowledge_replay': task_id > 0,
@@ -142,6 +143,7 @@ implementation:
                 return tasks
             
             def _class_split(self, num_tasks):
+            
                 tasks = []
                 dataset = self.data['dataset'] if isinstance(self.data, dict) else self.data
                 
@@ -162,7 +164,7 @@ implementation:
                             labels.append(label)
                     
                     unique_labels = list(set(labels))
-                    print(f"Found {len(unique_labels)} unique labels")
+                    print("Found {} unique labels".format(len(unique_labels)))
                     
                     if len(unique_labels) >= num_tasks:
                         # Split by label
@@ -198,7 +200,7 @@ implementation:
                                     'indices': indices,
                                     'num_samples': len(indices),
                                     'config': task_config,
-                                    'description': f'GAN Class Task {task_id+1} (Label: {label})',
+                                    'description': 'GAN Class Task {} (Label: {})'.format(task_id+1, label),
                                     'model_type': self.model_type,
                                     'training_algorithm': self.training_algorithm,
                                     'label': label,
@@ -228,7 +230,7 @@ implementation:
                                     'indices': task_indices,
                                     'num_samples': len(task_indices),
                                     'config': task_config,
-                                    'description': f'GAN Task {task_id+1} (Remaining Data)',
+                                    'description': 'GAN Task {} (Remaining Data)'.format(task_id+1),
                                     'model_type': self.model_type,
                                     'training_algorithm': self.training_algorithm,
                                     'requires_knowledge_replay': task_id > 0,
@@ -242,7 +244,7 @@ implementation:
                         tasks = self._temporal_split(num_tasks)
                         
                 except Exception as e:
-                    print(f"Class split failed: {e}")
+                    print("Class split failed: {}".format(e))
                     import traceback
                     traceback.print_exc()
                     tasks = self._temporal_split(num_tasks)
@@ -280,7 +282,7 @@ implementation:
                         'indices': indices.tolist(),
                         'num_samples': len(indices),
                         'config': task_config,
-                        'description': f'GAN Domain Task {task_id+1}/{num_tasks}',
+                        'description': 'GAN Domain Task {}/{}'.format(task_id+1, num_tasks),
                         'model_type': self.model_type,
                         'training_algorithm': self.training_algorithm,
                         'domain_shift': domain_shift,
@@ -293,6 +295,7 @@ implementation:
                 return tasks
             
             def _algorithm_aware_split(self, num_tasks):
+              
                 tasks = []
                 dataset = self.data['dataset'] if isinstance(self.data, dict) else self.data
                 total_samples = len(dataset)
@@ -320,7 +323,7 @@ implementation:
                             'indices': indices.tolist(),
                             'num_samples': len(indices),
                             'config': task_config,
-                            'description': f'GAN FF Task {task_id+1}/{num_tasks}',
+                            'description': 'GAN FF Task {}/{}'.format(task_id+1, num_tasks),
                             'model_type': self.model_type,
                             'training_algorithm': 'forward_forward',
                             'requires_knowledge_replay': True,
@@ -350,7 +353,7 @@ implementation:
                             'indices': indices.tolist(),
                             'num_samples': len(indices),
                             'config': task_config,
-                            'description': f'GAN CAFO Task {task_id+1}/{num_tasks}',
+                            'description': 'GAN CAFO Task {}/{}'.format(task_id+1, num_tasks),
                             'model_type': self.model_type,
                             'training_algorithm': 'cafo',
                             'requires_knowledge_replay': task_id > 0,
@@ -365,7 +368,7 @@ implementation:
                 return tasks
             
             def _create_task_config(self, task_id, num_samples):
-
+             
                 base_config = self.config.copy()
                 
                 # Modify configuration for this task
@@ -419,16 +422,16 @@ implementation:
             try:
                 with open(args.trained_model, 'rb') as f:
                     gan_model = pickle.load(f)
-                print(f"Trained model loaded: {type(gan_model).__name__}")
+                print("Trained model loaded: {}".format(type(gan_model).__name__))
             except Exception as e:
-                print(f"Error loading trained model: {e}")
+                print("Error loading trained model: {}".format(e))
                 gan_model = None
             
             # Load preprocessed data
             with open(args.preprocessed_data, 'rb') as f:
                 data_wrapper = pickle.load(f)
             
-            print(f"Preprocessed data loaded: {type(data_wrapper)}")
+            print("Preprocessed data loaded: {}".format(type(data_wrapper)))
             
             # Load training history
             with open(args.training_history, 'r') as f:
@@ -440,14 +443,14 @@ implementation:
             
             gan_type = model_config.get('gan_type', 'dcgan')
             algorithm = model_config.get('training_algorithm', 'backprop')
-            print(f"Creating continual tasks for {gan_type.upper()} trained with {algorithm.upper()}")
+            print("Creating continual tasks for {} trained with {}".format(gan_type.upper(), algorithm.upper()))
             
             # Get strategy and parameters
             strategy = cl_config.get('strategy', 'temporal_split')
             num_tasks = cl_config.get('num_tasks', 3)
             memory_size = cl_config.get('memory_size', 100)
             
-            print(f"Strategy: {strategy}, Tasks: {num_tasks}, Memory: {memory_size}")
+            print("Strategy: {}, Tasks: {}, Memory: {}".format(strategy, num_tasks, memory_size))
             
             # Create task splitter
             splitter = GANTaskSplitter(data_wrapper, gan_config, gan_model, training_history)
@@ -455,13 +458,13 @@ implementation:
             # Create tasks
             tasks = splitter.create_continual_tasks(num_tasks=num_tasks, strategy=strategy)
             
-            print(f"\\nCreated {len(tasks)} continual learning tasks:")
+            print("\\nCreated {} continual learning tasks:".format(len(tasks)))
             for task in tasks:
-                print(f"  Task {task['task_id']+1}: {task['description']} - {task['num_samples']} samples")
+                print("  Task {}: {} - {} samples".format(task['task_id']+1, task['description'], task['num_samples']))
                 if 'label' in task:
-                    print(f"    Label: {task['label']}")
+                    print("    Label: {}".format(task['label']))
                 if 'domain_shift' in task:
-                    print(f"    Domain ID: {task['domain_shift']['domain_id']}")
+                    print("    Domain ID: {}".format(task['domain_shift']['domain_id']))
             
             # Create continual learning configuration
             continual_config = {
@@ -522,9 +525,9 @@ implementation:
                 json.dump(continual_config, f, indent=2)
             
             print("\\nContinual Learning Configuration Created:")
-            print(f"  Strategy: {strategy}")
-            print(f"  Memory per task: {memory_size} samples")
-            print(f"  Algorithm-aware splits: {strategy == 'algorithm_aware_split'}")
+            print("  Strategy: {}".format(strategy))
+            print("  Memory per task: {} samples".format(memory_size))
+            print("  Algorithm-aware splits: {}".format(strategy == 'algorithm_aware_split'))
             print("="*60)
         
         if __name__ == '__main__':
