@@ -1,4 +1,4 @@
-name: 2 Build
+name: sssss Build
 description: Builds GAN model using master config
 inputs:
   - name: gan_config_json
@@ -38,6 +38,7 @@ implementation:
         import base64
         import traceback
         import time
+        import importlib.util
         
         parser = argparse.ArgumentParser(description='GAN Model Builder')
         parser.add_argument('--gan_config_json', type=str, required=True, help='Master GAN config as JSON string')
@@ -81,11 +82,27 @@ implementation:
         
         model = None
         
+        # Load the GAN module directly from file to bypass broken package imports
         try:
             if model_type == 'dcgan':
-                print("Importing DCGAN from nesy_factory.GANs.dcgan...")
-                from nesy_factory.GANs.dcgan import DCGAN, DCGANConfig
-                print("DCGAN imported successfully")
+                print("Loading DCGAN directly from file...")
+                
+                # Path to the dcgan.py file
+                dcgan_path = "/usr/local/lib/python3.10/site-packages/nesy_factory/GANs/dcgan.py"
+                
+                # Load the module directly
+                spec = importlib.util.spec_from_file_location("dcgan_module", dcgan_path)
+                dcgan_module = importlib.util.module_from_spec(spec)
+                
+                # Execute the module to load all classes
+                with open(dcgan_path, 'r') as f:
+                    exec(f.read(), dcgan_module.__dict__)
+                
+                # Get the classes
+                DCGAN = dcgan_module.DCGAN
+                DCGANConfig = dcgan_module.DCGANConfig
+                
+                print("Successfully loaded DCGAN")
                 
                 # Create DCGAN config
                 dcgan_config_dict = {
@@ -97,18 +114,7 @@ implementation:
                     'learning_rate': model_config.get('learning_rate', 0.0002),
                     'epochs': model_config.get('epochs', 50),
                     'device': 'cuda' if torch.cuda.is_available() else 'cpu',
-                    'generator_features': model_config.get('generator_features', 64),
-                    'discriminator_features': model_config.get('discriminator_features', 64),
-                    'use_wgan': model_config.get('use_wgan', False),
-                    'use_forward_forward': model_config.get('use_forward_forward', False),
-                    'use_cafo': model_config.get('use_cafo', False),
                 }
-                
-                # Add any additional DCGAN-specific configs from model_config
-                for key in ['generator_layers', 'discriminator_layers', 'use_gradient_penalty', 
-                           'lambda_gp', 'n_critic', 'clip_value', 'label_smoothing']:
-                    if key in model_config:
-                        dcgan_config_dict[key] = model_config[key]
                 
                 print(f"DCGAN config created")
                 dcgan_config = DCGANConfig(**dcgan_config_dict)
@@ -116,9 +122,24 @@ implementation:
                 print("DCGAN created successfully")
                 
             elif model_type == 'vanilla_gan':
-                print("Importing VanillaGAN from nesy_factory.GANs.vanilla_gan...")
-                from nesy_factory.GANs.vanilla_gan import VanillaGAN, VanillaGANConfig
-                print("VanillaGAN imported successfully")
+                print("Loading VanillaGAN directly from file...")
+                
+                # Path to the vanilla_gan.py file
+                vanilla_path = "/usr/local/lib/python3.10/site-packages/nesy_factory/GANs/vanilla_gan.py"
+                
+                # Load the module directly
+                spec = importlib.util.spec_from_file_location("vanilla_module", vanilla_path)
+                vanilla_module = importlib.util.module_from_spec(spec)
+                
+                # Execute the module to load all classes
+                with open(vanilla_path, 'r') as f:
+                    exec(f.read(), vanilla_module.__dict__)
+                
+                # Get the classes
+                VanillaGAN = vanilla_module.VanillaGAN
+                VanillaGANConfig = vanilla_module.VanillaGANConfig
+                
+                print("Successfully loaded VanillaGAN")
                 
                 # Create VanillaGAN config
                 vanilla_config_dict = {
@@ -131,13 +152,6 @@ implementation:
                     'device': 'cuda' if torch.cuda.is_available() else 'cpu',
                 }
                 
-                # Add any additional VanillaGAN-specific configs from model_config
-                for key in ['generator_layers', 'discriminator_layers', 'beta1', 'beta2',
-                           'generator_activation', 'discriminator_activation', 'generator_dropout',
-                           'discriminator_dropout', 'use_forward_forward', 'use_cafo']:
-                    if key in model_config:
-                        vanilla_config_dict[key] = model_config[key]
-                
                 print(f"VanillaGAN config created")
                 vanilla_config = VanillaGANConfig(**vanilla_config_dict)
                 model = VanillaGAN(vanilla_config)
@@ -147,11 +161,6 @@ implementation:
                 print(f"Unknown model type: {model_type}")
                 sys.exit(1)
                 
-        except ImportError as e:
-            print(f"Failed to import from nesy_factory: {e}")
-            print("Please ensure nesy_factory is properly installed with GANs module")
-            traceback.print_exc()
-            sys.exit(1)
         except Exception as e:
             print(f"Failed to create model: {e}")
             traceback.print_exc()
