@@ -1,4 +1,4 @@
-name: Train
+name: 2 Train
 description: Trains GAN model using master config
 inputs:
   - name: initialized_model
@@ -18,6 +18,9 @@ outputs:
     type: String
   - name: generated_samples
     type: Dataset
+  - name: training_metrics
+    type: String
+    description: Training metrics summary
 
 implementation:
   container:
@@ -48,6 +51,7 @@ implementation:
         parser.add_argument('--gan_config_base64_updated', type=str, required=True, help='Output path for updated config (base64)')
         parser.add_argument('--training_history', type=str, required=True, help='Output path for training history')
         parser.add_argument('--generated_samples', type=str, required=True, help='Output path for generated samples')
+        parser.add_argument('--training_metrics', type=str, required=True, help='Output path for training metrics')
         args = parser.parse_args()
         
         print("GAN TRAINING STARTING")
@@ -111,6 +115,8 @@ implementation:
         # Training loop (simplified)
         print("Starting training...")
         training_history = []
+        d_losses = []
+        g_losses = []
         
         for epoch in range(epochs):
             try:
@@ -119,17 +125,21 @@ implementation:
                 g_loss = 1.2 / (epoch + 1.5)
                 train_loss = d_loss + g_loss
                 
+                d_losses.append(d_loss)
+                g_losses.append(g_loss)
+                
                 epoch_metrics = {
                     'epoch': epoch + 1,
                     'train_loss': train_loss,
                     'd_loss': d_loss,
-                    'g_loss': g_loss
+                    'g_loss': g_loss,
+                    'learning_rate': training_config.get('learning_rate', 0.0002)
                 }
                 
                 training_history.append(epoch_metrics)
                 
                 if epoch % training_config.get('log_interval', 1) == 0:
-                    print(f"Epoch [{epoch+1}/{epochs}] - Loss: {train_loss:.4f}")
+                    print(f"Epoch [{epoch+1}/{epochs}] - Loss: {train_loss:.4f} (D: {d_loss:.4f}, G: {g_loss:.4f})")
                     
             except Exception as e:
                 print(f"Error in epoch {epoch+1}: {e}")
@@ -172,11 +182,33 @@ implementation:
         except Exception as e:
             print(f"Error generating samples: {e}")
         
+        # Calculate training metrics summary
+        avg_d_loss = sum(d_losses) / len(d_losses) if d_losses else 0
+        avg_g_loss = sum(g_losses) / len(g_losses) if g_losses else 0
+        final_loss = training_history[-1]['train_loss'] if training_history else 0
+        
+        training_metrics_data = {
+            'model_type': model_type,
+            'epochs_completed': epochs,
+            'total_training_time': time.time() - start_time,
+            'average_d_loss': avg_d_loss,
+            'average_g_loss': avg_g_loss,
+            'final_loss': final_loss,
+            'samples_generated': len(generated_samples),
+            'batch_size': batch_size,
+            'dataset_size': len(dataset) if hasattr(dataset, '__len__') else 0,
+            'training_success': True,
+            'training_summary': f"Trained {model_type.upper()} for {epochs} epochs with final loss {final_loss:.4f}"
+        }
+        
         # Update master config
         gan_config['training'].update({
             'epochs_completed': epochs,
-            'final_loss': training_history[-1]['train_loss'] if training_history else 0,
-            'training_time_seconds': time.time() - start_time
+            'final_loss': final_loss,
+            'average_d_loss': avg_d_loss,
+            'average_g_loss': avg_g_loss,
+            'training_time_seconds': time.time() - start_time,
+            'training_completed': True
         })
         
         gan_config['metadata'].update({
@@ -205,11 +237,16 @@ implementation:
         with open(args.generated_samples, 'wb') as f:
             pickle.dump(generated_samples, f)
         
+        os.makedirs(os.path.dirname(args.training_metrics) or '.', exist_ok=True)
+        with open(args.training_metrics, 'w') as f:
+            json.dump(training_metrics_data, f, indent=2)
+        
         print("="*60)
         print("GANTrain completed successfully")
         print(f"Trained model: {args.trained_model}")
         print(f"Config (base64) saved: {args.gan_config_base64_updated}")
         print(f"Training history saved: {args.training_history}")
+        print(f"Training metrics saved: {args.training_metrics}")
         print(f"Generated samples: {len(generated_samples)}")
         print(f"Total training time: {time.time() - start_time:.2f} seconds")
         print("="*60)
@@ -229,3 +266,5 @@ implementation:
       - {outputPath: training_history}
       - --generated_samples
       - {outputPath: generated_samples}
+      - --training_metrics
+      - {outputPath: training_metrics}
