@@ -1,4 +1,4 @@
-name: Upload GAN Model to CDN
+name: 2 Upload GAN Model to CDN
 description: Uploads trained GAN model as .pt file to CDN with metadata.
 inputs:
   - name: trained_model
@@ -11,7 +11,7 @@ inputs:
     type: String
     description: "Training metrics from Train GAN Model Enhanced component"
   - name: bearer_token
-    type: string
+    type: String
     description: "Access token from IAMLoginService component"
   - name: domain
     type: String
@@ -41,9 +41,22 @@ implementation:
       - sh
       - -c
       - |
+        set -e
+        
+        echo "Installing required packages..."
+        apt-get update > /dev/null
+        
+        # Install curl if not present
         if ! command -v curl &> /dev/null; then
-            apt-get update > /dev/null && apt-get install -y curl > /dev/null
+            echo "Installing curl..."
+            apt-get install -y curl > /dev/null
         fi
+        
+        # Install Python packages
+        echo "Installing Python packages..."
+        pip install torch==1.13.1 --index-url https://download.pytorch.org/whl/cpu > /dev/null
+        
+        echo "Starting the Python script..."
         exec "$0" "$@"
       - python3
       - -u
@@ -51,11 +64,13 @@ implementation:
       - |
         import sys, os, subprocess, json, pickle, tempfile, time, argparse
         
+        print(f"Python script started with args: {sys.argv}")
+        
         parser = argparse.ArgumentParser()
         parser.add_argument('--trained_model_path', type=str, required=True)
-        parser.add_argument('--gan_config_path', type=str, required=True)
-        parser.add_argument('--training_metrics_path', type=str, required=True)
-        parser.add_argument('--bearer_token_path', type=str, required=True)
+        parser.add_argument('--gan_config', type=str, required=True)
+        parser.add_argument('--training_metrics', type=str, required=True)
+        parser.add_argument('--bearer_token', type=str, required=True)
         parser.add_argument('--domain', type=str, required=True)
         parser.add_argument('--get_cdn', type=str, required=True)
         parser.add_argument('--model_name', type=str, required=True)
@@ -64,23 +79,47 @@ implementation:
         parser.add_argument('--model_metadata_path', type=str, required=True)
         args = parser.parse_args()
         
+        print('=== DEBUG: Input Values ===')
+        print(f"1. trained_model_path: {args.trained_model_path}")
+        print(f"2. gan_config length: {len(args.gan_config)} chars")
+        print(f"3. training_metrics length: {len(args.training_metrics)} chars")
+        print(f"4. bearer_token (first 50 chars): {args.bearer_token[:50] if len(args.bearer_token) > 50 else args.bearer_token}")
+        print(f"5. domain: {args.domain}")
+        print(f"6. get_cdn: {args.get_cdn}")
+        print(f"7. model_name: {args.model_name}")
+        print('===========================')
+        
         print('Starting GAN Model CDN Upload')
         
-        # Load bearer token
-        with open(args.bearer_token_path, 'r') as f:
-            bearer_token = f.read().strip()
+        # Parse JSON strings directly
+        try:
+            gan_config = json.loads(args.gan_config)
+            print("Successfully parsed gan_config JSON")
+        except json.JSONDecodeError as e:
+            print(f"Error parsing gan_config JSON: {e}")
+            sys.exit(1)
+        
+        try:
+            training_metrics = json.loads(args.training_metrics)
+            print("Successfully parsed training_metrics JSON")
+        except json.JSONDecodeError as e:
+            print(f"Error parsing training_metrics JSON: {e}")
+            sys.exit(1)
+        
+        bearer_token = args.bearer_token.strip()
         
         upload_url = f"{args.domain}/mobius-content-service/v1.0/content/upload?filePathAccess=private&filePath=%2Fbottle%2Flimka%2Fsoda%2F"
+        print(f"Upload URL: {upload_url}")
         
         # Function to upload file to CDN
         def upload_file_to_cdn(file_path, filename):
-            print('Uploading {}...'.format(filename))
+            print(f'Uploading {filename}...')
             
             curl_command = [
                 "curl",
                 "--location", upload_url,
-                "--header", "Authorization: Bearer {}".format(bearer_token),
-                "--form", "file=@{}".format(file_path),
+                "--header", f"Authorization: Bearer {bearer_token}",
+                "--form", f"file=@{file_path}",
                 "--fail",
                 "--show-error",
                 "--silent"
@@ -102,26 +141,26 @@ implementation:
                     return None
                 
                 full_url = f"{args.get_cdn}{relative_cdn_url}"
-                print('Upload successful: {}'.format(full_url))
+                print(f'Upload successful: {full_url}')
                 return full_url
                 
             except subprocess.CalledProcessError as e:
-                print('Curl error: {}'.format(e.returncode))
-                print('Error output: {}'.format(e.stderr))
+                print(f'Curl error: {e.returncode}')
+                print(f'Error output: {e.stderr}')
                 return None
             except json.JSONDecodeError as e:
-                print('JSON parse error: {}'.format(e))
+                print(f'JSON parse error: {e}')
                 return None
         
-        # Load model and configurations
-        with open(args.trained_model_path, 'rb') as f:
-            gan_model = pickle.load(f)
-        
-        with open(args.gan_config_path, 'r') as f:
-            gan_config = json.load(f)
-        
-        with open(args.training_metrics_path, 'r') as f:
-            training_metrics = json.load(f)
+        # Load model from pickle file
+        print(f"Loading model from: {args.trained_model_path}")
+        try:
+            with open(args.trained_model_path, 'rb') as f:
+                gan_model = pickle.load(f)
+            print("Successfully loaded trained model")
+        except Exception as e:
+            print(f"Error loading trained model: {e}")
+            sys.exit(1)
         
         # Create model metadata
         model_type = gan_config.get('model_type', 'dcgan')
@@ -132,8 +171,10 @@ implementation:
         config_url = None
         
         with tempfile.TemporaryDirectory() as temp_dir:
+            print(f"Using temp directory: {temp_dir}")
+            
             # 1. Save model as .pt file
-            model_file_path = os.path.join(temp_dir, '{}.pt'.format(base_filename))
+            model_file_path = os.path.join(temp_dir, f'{base_filename}.pt')
             
             # Extract model state dicts
             model_data = {
@@ -146,50 +187,66 @@ implementation:
             }
             
             # Try to extract model state dicts
+            print("Attempting to extract model state dicts...")
             try:
                 if hasattr(gan_model, 'generator'):
+                    print("Found generator in gan_model")
                     model_data['generator_state_dict'] = gan_model.generator.state_dict()
                 if hasattr(gan_model, 'discriminator'):
+                    print("Found discriminator in gan_model")
                     model_data['discriminator_state_dict'] = gan_model.discriminator.state_dict()
                 if hasattr(gan_model, 'trainer'):
+                    print("Found trainer in gan_model")
                     if hasattr(gan_model.trainer, 'generator'):
+                        print("Found generator in trainer")
                         model_data['generator_state_dict'] = gan_model.trainer.generator.state_dict()
                     if hasattr(gan_model.trainer, 'discriminator'):
+                        print("Found discriminator in trainer")
                         model_data['discriminator_state_dict'] = gan_model.trainer.discriminator.state_dict()
             except Exception as e:
-                print('Warning: Could not extract model state dicts: {}'.format(e))
+                print(f'Warning: Could not extract model state dicts: {e}')
             
             # Save model as .pt file
             try:
                 import torch
+                print(f"PyTorch version: {torch.__version__}")
+                print(f"Saving model to: {model_file_path}")
                 torch.save(model_data, model_file_path)
-                print('Saved model to: {}'.format(model_file_path))
+                print('Saved model to .pt file')
                 
                 # Upload model .pt file
-                model_url = upload_file_to_cdn(model_file_path, '{}.pt'.format(base_filename))
-            except ImportError:
-                print('Error: torch not available for saving .pt file')
+                model_url = upload_file_to_cdn(model_file_path, f'{base_filename}.pt')
+            except ImportError as e:
+                print(f'Error: torch not available: {e}')
+                import traceback
+                traceback.print_exc()
+            except Exception as e:
+                print(f'Error saving model: {e}')
+                import traceback
+                traceback.print_exc()
             
             # 2. Save configuration as JSON
-            config_file_path = os.path.join(temp_dir, '{}_config.json'.format(base_filename))
+            config_file_path = os.path.join(temp_dir, f'{base_filename}_config.json')
+            print(f"Saving config to: {config_file_path}")
             with open(config_file_path, 'w') as f:
-                json.dump({
+                config_data = {
                     'gan_config': gan_config,
                     'training_metrics': training_metrics,
                     'model_type': model_type,
                     'upload_timestamp': timestamp
-                }, f, indent=2)
+                }
+                json.dump(config_data, f, indent=2)
             
             # Upload configuration
-            config_url = upload_file_to_cdn(config_file_path, '{}_config.json'.format(base_filename))
+            config_url = upload_file_to_cdn(config_file_path, f'{base_filename}_config.json')
         
         # Create model metadata
         model_metadata = {
             'model_name': args.model_name,
             'model_type': model_type,
             'timestamp': timestamp,
-            'model_filename': '{}.pt'.format(base_filename),
-            'config_filename': '{}_config.json'.format(base_filename),
+            'model_filename': f'{base_filename}.pt',
+            'config_filename': f'{base_filename}_config.json',
             'model_url': model_url if model_url else '',
             'config_url': config_url if config_url else '',
             'upload_status': {
@@ -206,32 +263,37 @@ implementation:
         }
         
         # Save outputs
+        print(f"\\n=== Saving Outputs ===")
+        
         os.makedirs(os.path.dirname(args.model_cdn_url_path) or '.', exist_ok=True)
         with open(args.model_cdn_url_path, 'w') as f:
             f.write(model_url if model_url else '')
+            print(f"Saved model_cdn_url: {model_url if model_url else 'EMPTY'}")
         
         os.makedirs(os.path.dirname(args.config_cdn_url_path) or '.', exist_ok=True)
         with open(args.config_cdn_url_path, 'w') as f:
             f.write(config_url if config_url else '')
+            print(f"Saved config_cdn_url: {config_url if config_url else 'EMPTY'}")
         
         os.makedirs(os.path.dirname(args.model_metadata_path) or '.', exist_ok=True)
         with open(args.model_metadata_path, 'w') as f:
             json.dump(model_metadata, f, indent=2)
+            print(f"Saved model_metadata")
         
-        print('GAN Model CDN Upload Summary:')
-        print('  Model uploaded: {}'.format('Yes' if model_url else 'No'))
-        print('  Config uploaded: {}'.format('Yes' if config_url else 'No'))
-        print('  Model metadata saved to: {}'.format(args.model_metadata_path))
+        print('\\n=== GAN Model CDN Upload Summary ===')
+        print(f'  Model uploaded: {"Yes" if model_url else "No"}')
+        print(f'  Config uploaded: {"Yes" if config_url else "No"}')
+        print('====================================')
 
     args:
       - --trained_model_path
       - {inputPath: trained_model}
-      - --gan_config_path
-      - {inputPath: gan_config}
-      - --training_metrics_path
-      - {inputPath: training_metrics}
-      - --bearer_token_path
-      - {inputPath: bearer_token}
+      - --gan_config
+      - {inputValue: gan_config}
+      - --training_metrics
+      - {inputValue: training_metrics}
+      - --bearer_token
+      - {inputValue: bearer_token}
       - --domain
       - {inputValue: domain}
       - --get_cdn
