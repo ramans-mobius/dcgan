@@ -1,26 +1,25 @@
-name: 2 Train
+name: Train
 description: Trains GAN model using master config
 inputs:
   - name: initialized_model
     type: Model
   - name: preprocessed_data
     type: Dataset
-  - name: gan_config_base64
+  - name: gan_config_json
     type: String
-    description: Master GAN configuration (base64 encoded)
+    description: Master GAN configuration as JSON string
 outputs:
   - name: trained_model
     type: Model
-  - name: gan_config_base64_updated
-    type: String
-    description: Updated master GAN configuration (base64 encoded)
   - name: training_history
+    type: String
+  - name: training_metrics
     type: String
   - name: generated_samples
     type: Dataset
-  - name: training_metrics
+  - name: gan_config_base64_updated
     type: String
-    description: Training metrics summary
+    description: Updated master GAN configuration (base64 encoded)
 
 implementation:
   container:
@@ -29,6 +28,8 @@ implementation:
       - sh
       - -c
       - |
+        pip install torchvision==0.15.2 --quiet
+        echo "Torchvision installed"
         exec "$0" "$@"
       - python3
       - -u
@@ -41,31 +42,32 @@ implementation:
         import base64
         import time
         import torch
+        import torch.nn as nn
+        import torch.optim as optim
+        import numpy as np
         from torch.utils.data import DataLoader
         
         parser = argparse.ArgumentParser(description='GAN Training')
         parser.add_argument('--initialized_model', type=str, required=True, help='Path to initialized model')
         parser.add_argument('--preprocessed_data', type=str, required=True, help='Path to preprocessed data')
-        parser.add_argument('--gan_config_base64', type=str, required=True, help='Master GAN config (base64)')
+        parser.add_argument('--gan_config_json', type=str, required=True, help='Master GAN config as JSON string')
         parser.add_argument('--trained_model', type=str, required=True, help='Output path for trained model')
-        parser.add_argument('--gan_config_base64_updated', type=str, required=True, help='Output path for updated config (base64)')
         parser.add_argument('--training_history', type=str, required=True, help='Output path for training history')
-        parser.add_argument('--generated_samples', type=str, required=True, help='Output path for generated samples')
         parser.add_argument('--training_metrics', type=str, required=True, help='Output path for training metrics')
+        parser.add_argument('--generated_samples', type=str, required=True, help='Output path for generated samples')
+        parser.add_argument('--gan_config_base64_updated', type=str, required=True, help='Output path for updated config (base64)')
         args = parser.parse_args()
         
         print("GAN TRAINING STARTING")
         print("="*60)
+        print(f"gan_config_json length: {len(args.gan_config_json)}")
         
-        start_time = time.time()
-        
-        # Decode base64 config
+        # Parse JSON config
         try:
-            config_json = base64.b64decode(args.gan_config_base64).decode('utf-8')
-            gan_config = json.loads(config_json)
-            print("Master GAN config decoded successfully")
+            gan_config = json.loads(args.gan_config_json)
+            print("Master GAN config parsed successfully")
         except Exception as e:
-            print(f"Failed to decode base64 config: {e}")
+            print(f"Failed to parse JSON config: {e}")
             gan_config = {
                 'model': {},
                 'training': {},
@@ -77,137 +79,189 @@ implementation:
             gan_model = pickle.load(f)
         print(f"Model loaded: {type(gan_model).__name__}")
         
-        # Load data
+        # Load preprocessed data
         with open(args.preprocessed_data, 'rb') as f:
             data_wrapper = pickle.load(f)
         
-        # Get parameters from master config
-        model_config = gan_config.get('model', {})
+        dataset = data_wrapper['dataset']
+        model_type = data_wrapper['model_type']
+        image_size = data_wrapper['image_size']
+        channels = data_wrapper['channels']
+        
+        print(f"Training {model_type.upper()} model")
+        print(f"Dataset size: {len(dataset)} samples")
+        print(f"Image size: {image_size}x{image_size}")
+        print(f"Channels: {channels}")
+        
+        # Get training config
         training_config = gan_config.get('training', {})
-        
-        model_type = model_config.get('gan_type', 'dcgan')
-        epochs = training_config.get('epochs', 5)
         batch_size = training_config.get('batch_size', 32)
-        
-        print(f"Training {model_type.upper()} for {epochs} epochs")
-        print(f"Batch size: {batch_size}")
-        
-        # Extract dataset
-        dataset = None
-        if isinstance(data_wrapper, dict) and 'dataset' in data_wrapper:
-            dataset = data_wrapper['dataset']
-            print(f"Dataset samples: {len(dataset)}")
-        
-        if dataset is None:
-            print("Creating dummy dataset")
-            dummy_data = torch.randn(100, 3, 64, 64)
-            from torch.utils.data import TensorDataset
-            dataset = TensorDataset(dummy_data)
+        epochs = training_config.get('epochs', 10)
+        learning_rate = training_config.get('learning_rate', 0.0002)
+        sample_interval = training_config.get('sample_interval', 5)
         
         # Create data loader
-        train_loader = DataLoader(
-            dataset, 
-            batch_size=batch_size, 
-            shuffle=True,
-            num_workers=0
-        )
+        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=0)
         
-        # Training loop (simplified)
-        print("Starting training...")
-        training_history = []
-        d_losses = []
-        g_losses = []
+        # Get device
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        print(f"Using device: {device}")
+        
+        # Move model to device
+        gan_model.to(device)
+        
+        # Training loop
+        print(f"Starting training for {epochs} epochs...")
+        start_time = time.time()
+        
+        training_history = {
+            'epochs': epochs,
+            'batch_size': batch_size,
+            'learning_rate': learning_rate,
+            'losses_g': [],
+            'losses_d': [],
+            'epoch_times': [],
+            'samples_generated': []
+        }
         
         for epoch in range(epochs):
-            try:
-                # Simulated training metrics
-                d_loss = 1.0 / (epoch + 1.5)
-                g_loss = 1.2 / (epoch + 1.5)
-                train_loss = d_loss + g_loss
+            epoch_start_time = time.time()
+            epoch_loss_g = 0
+            epoch_loss_d = 0
+            num_batches = 0
+            
+            for batch_idx, real_imgs in enumerate(dataloader):
+                real_imgs = real_imgs.to(device)
+                batch_size_actual = real_imgs.size(0)
                 
-                d_losses.append(d_loss)
-                g_losses.append(g_loss)
-                
-                epoch_metrics = {
-                    'epoch': epoch + 1,
-                    'train_loss': train_loss,
-                    'd_loss': d_loss,
-                    'g_loss': g_loss,
-                    'learning_rate': training_config.get('learning_rate', 0.0002)
-                }
-                
-                training_history.append(epoch_metrics)
-                
-                if epoch % training_config.get('log_interval', 1) == 0:
-                    print(f"Epoch [{epoch+1}/{epochs}] - Loss: {train_loss:.4f} (D: {d_loss:.4f}, G: {g_loss:.4f})")
+                # Train discriminator
+                if hasattr(gan_model, 'train_discriminator'):
+                    loss_d = gan_model.train_discriminator(real_imgs)
+                else:
+                    # Default discriminator training
+                    gan_model.discriminator_optimizer.zero_grad()
                     
-            except Exception as e:
-                print(f"Error in epoch {epoch+1}: {e}")
-        
-        # Generate samples
-        generated_samples = []
-        try:
-            if hasattr(gan_model, 'generate'):
-                num_samples = 16
-                samples = gan_model.generate(num_samples)
+                    # Real images
+                    real_labels = torch.ones(batch_size_actual, 1).to(device)
+                    real_output = gan_model.discriminator(real_imgs)
+                    d_loss_real = gan_model.criterion(real_output, real_labels)
+                    
+                    # Fake images
+                    noise = torch.randn(batch_size_actual, gan_model.latent_dim).to(device)
+                    if model_type == 'dcgan':
+                        noise = noise.view(batch_size_actual, gan_model.latent_dim, 1, 1)
+                    
+                    fake_imgs = gan_model.generator(noise)
+                    fake_labels = torch.zeros(batch_size_actual, 1).to(device)
+                    fake_output = gan_model.discriminator(fake_imgs.detach())
+                    d_loss_fake = gan_model.criterion(fake_output, fake_labels)
+                    
+                    # Total discriminator loss
+                    loss_d = d_loss_real + d_loss_fake
+                    loss_d.backward()
+                    gan_model.discriminator_optimizer.step()
                 
-                from PIL import Image
+                # Train generator
+                if hasattr(gan_model, 'train_generator'):
+                    loss_g = gan_model.train_generator(batch_size_actual)
+                else:
+                    # Default generator training
+                    gan_model.generator_optimizer.zero_grad()
+                    
+                    noise = torch.randn(batch_size_actual, gan_model.latent_dim).to(device)
+                    if model_type == 'dcgan':
+                        noise = noise.view(batch_size_actual, gan_model.latent_dim, 1, 1)
+                    
+                    fake_imgs = gan_model.generator(noise)
+                    fake_output = gan_model.discriminator(fake_imgs)
+                    
+                    # Generator wants discriminator to think fake images are real
+                    loss_g = gan_model.criterion(fake_output, real_labels)
+                    loss_g.backward()
+                    gan_model.generator_optimizer.step()
+                
+                epoch_loss_g += loss_g.item()
+                epoch_loss_d += loss_d.item()
+                num_batches += 1
+            
+            epoch_time = time.time() - epoch_start_time
+            avg_loss_g = epoch_loss_g / num_batches
+            avg_loss_d = epoch_loss_d / num_batches
+            
+            training_history['losses_g'].append(avg_loss_g)
+            training_history['losses_d'].append(avg_loss_d)
+            training_history['epoch_times'].append(epoch_time)
+            
+            # Generate sample images
+            if epoch % sample_interval == 0 or epoch == epochs - 1:
+                with torch.no_grad():
+                    noise = torch.randn(4, gan_model.latent_dim).to(device)
+                    if model_type == 'dcgan':
+                        noise = noise.view(4, gan_model.latent_dim, 1, 1)
+                    samples = gan_model.generator(noise).cpu()
+                    training_history['samples_generated'].append({
+                        'epoch': epoch,
+                        'samples': samples.numpy().tolist()
+                    })
+            
+            print(f"Epoch [{epoch+1}/{epochs}] | Loss D: {avg_loss_d:.4f} | Loss G: {avg_loss_g:.4f} | Time: {epoch_time:.2f}s")
+        
+        total_time = time.time() - start_time
+        print(f"Training completed in {total_time:.2f} seconds")
+        
+        # Generate final samples
+        generated_samples = []
+        with torch.no_grad():
+            for i in range(16):
+                noise = torch.randn(1, gan_model.latent_dim).to(device)
+                if model_type == 'dcgan':
+                    noise = noise.view(1, gan_model.latent_dim, 1, 1)
+                sample = gan_model.generator(noise).cpu()
+                
+                # Convert to base64 for storage
                 import io
+                from PIL import Image
                 import numpy as np
                 
-                for i in range(min(num_samples, len(samples))):
-                    sample = samples[i].detach().cpu()
-                    sample = (sample + 1) / 2
-                    
-                    if sample.shape[0] == 1:
-                        img_np = sample.squeeze(0).numpy()
-                        img_pil = Image.fromarray((img_np * 255).astype(np.uint8), mode='L')
-                    else:
-                        img_np = sample.permute(1, 2, 0).numpy()
-                        img_pil = Image.fromarray((img_np * 255).astype(np.uint8), mode='RGB')
-                    
-                    img_bytes = io.BytesIO()
-                    img_pil.save(img_bytes, format='PNG')
-                    base64_data = base64.b64encode(img_bytes.getvalue()).decode('utf-8')
-                    
-                    generated_samples.append({
-                        'epoch': epochs,
-                        'sample_index': i,
-                        'image_data': base64_data,
-                        'filename': f'gan_sample_{i}.png'
-                    })
+                sample_img = sample.squeeze(0)
+                if sample_img.shape[0] == 1:
+                    img_np = (sample_img.squeeze(0).numpy() + 1) / 2 * 255
+                    img_pil = Image.fromarray(img_np.astype(np.uint8), mode='L')
+                else:
+                    img_np = (sample_img.permute(1, 2, 0).numpy() + 1) / 2 * 255
+                    img_pil = Image.fromarray(img_np.astype(np.uint8), mode='RGB')
                 
-                print(f"Generated {len(generated_samples)} samples")
+                img_bytes = io.BytesIO()
+                img_pil.save(img_bytes, format='PNG')
+                base64_data = base64.b64encode(img_bytes.getvalue()).decode('utf-8')
                 
-        except Exception as e:
-            print(f"Error generating samples: {e}")
+                generated_samples.append({
+                    'sample_id': i,
+                    'image_data': base64_data,
+                    'epoch': epochs,
+                    'model_type': model_type
+                })
         
-        # Calculate training metrics summary
-        avg_d_loss = sum(d_losses) / len(d_losses) if d_losses else 0
-        avg_g_loss = sum(g_losses) / len(g_losses) if g_losses else 0
-        final_loss = training_history[-1]['train_loss'] if training_history else 0
-        
+        # Create training metrics
         training_metrics_data = {
             'model_type': model_type,
-            'epochs_completed': epochs,
-            'total_training_time': time.time() - start_time,
-            'average_d_loss': avg_d_loss,
-            'average_g_loss': avg_g_loss,
-            'final_loss': final_loss,
-            'samples_generated': len(generated_samples),
-            'batch_size': batch_size,
-            'dataset_size': len(dataset) if hasattr(dataset, '__len__') else 0,
-            'training_success': True,
-            'training_summary': f"Trained {model_type.upper()} for {epochs} epochs with final loss {final_loss:.4f}"
+            'training_time': total_time,
+            'total_epochs': epochs,
+            'final_g_loss': training_history['losses_g'][-1],
+            'final_d_loss': training_history['losses_d'][-1],
+            'avg_epoch_time': np.mean(training_history['epoch_times']),
+            'samples_generated_count': len(generated_samples),
+            'training_completed': True
         }
         
         # Update master config
         gan_config['training'].update({
-            'epochs_completed': epochs,
-            'final_loss': final_loss,
-            'average_d_loss': avg_d_loss,
-            'average_g_loss': avg_g_loss,
-            'training_time_seconds': time.time() - start_time,
+            'completed_epochs': epochs,
+            'final_losses': {
+                'generator': training_history['losses_g'][-1],
+                'discriminator': training_history['losses_d'][-1]
+            },
+            'training_time': total_time,
             'training_completed': True
         })
         
@@ -225,30 +279,28 @@ implementation:
         with open(args.trained_model, 'wb') as f:
             pickle.dump(gan_model, f)
         
-        os.makedirs(os.path.dirname(args.gan_config_base64_updated) or '.', exist_ok=True)
-        with open(args.gan_config_base64_updated, 'w') as f:
-            f.write(updated_config_base64)
-        
         os.makedirs(os.path.dirname(args.training_history) or '.', exist_ok=True)
         with open(args.training_history, 'w') as f:
             json.dump(training_history, f, indent=2)
-        
-        os.makedirs(os.path.dirname(args.generated_samples) or '.', exist_ok=True)
-        with open(args.generated_samples, 'wb') as f:
-            pickle.dump(generated_samples, f)
         
         os.makedirs(os.path.dirname(args.training_metrics) or '.', exist_ok=True)
         with open(args.training_metrics, 'w') as f:
             json.dump(training_metrics_data, f, indent=2)
         
+        os.makedirs(os.path.dirname(args.generated_samples) or '.', exist_ok=True)
+        with open(args.generated_samples, 'wb') as f:
+            pickle.dump(generated_samples, f)
+        
+        os.makedirs(os.path.dirname(args.gan_config_base64_updated) or '.', exist_ok=True)
+        with open(args.gan_config_base64_updated, 'w') as f:
+            f.write(updated_config_base64)
+        
         print("="*60)
         print("GANTrain completed successfully")
-        print(f"Trained model: {args.trained_model}")
+        print(f"Trained model saved: {args.trained_model}")
+        print(f"Training history: {args.training_history}")
+        print(f"Generated samples: {args.generated_samples}")
         print(f"Config (base64) saved: {args.gan_config_base64_updated}")
-        print(f"Training history saved: {args.training_history}")
-        print(f"Training metrics saved: {args.training_metrics}")
-        print(f"Generated samples: {len(generated_samples)}")
-        print(f"Total training time: {time.time() - start_time:.2f} seconds")
         print("="*60)
 
     args:
@@ -256,15 +308,15 @@ implementation:
       - {inputPath: initialized_model}
       - --preprocessed_data
       - {inputPath: preprocessed_data}
-      - --gan_config_base64
-      - {inputPath: gan_config_base64}
+      - --gan_config_json
+      - {inputValue: gan_config_json}
       - --trained_model
       - {outputPath: trained_model}
-      - --gan_config_base64_updated
-      - {outputPath: gan_config_base64_updated}
       - --training_history
       - {outputPath: training_history}
-      - --generated_samples
-      - {outputPath: generated_samples}
       - --training_metrics
       - {outputPath: training_metrics}
+      - --generated_samples
+      - {outputPath: generated_samples}
+      - --gan_config_base64_updated
+      - {outputPath: gan_config_base64_updated}
