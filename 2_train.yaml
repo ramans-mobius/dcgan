@@ -178,7 +178,7 @@ implementation:
             gan.discriminator.to(device)
         
         # TRAINING LOGIC WITH ALGORITHM SUPPORT
-        print(f"\nStarting {algorithm.upper()} training...")
+        print(f"\\nStarting {algorithm.upper()} training...")
         
         training_history = {
             'epochs_completed': 0,
@@ -218,7 +218,7 @@ implementation:
                 print(f"CAFO pre-training failed: {e}")
         
         # MAIN TRAINING LOOP
-        print(f"\nStarting main training for {epochs} epochs...")
+        print(f"\\nStarting main training for {epochs} epochs...")
         
         for epoch in range(epochs):
             epoch_start = time.time()
@@ -268,7 +268,7 @@ implementation:
         training_history['epochs_completed'] = epochs
         
         # GENERATE SAMPLES
-        print("\nGenerating evaluation samples...")
+        print("\\nGenerating evaluation samples...")
         generated_samples = []
         num_samples = min(16, training_config.get('num_samples', 16))
         
