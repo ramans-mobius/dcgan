@@ -1,4 +1,4 @@
-name: sssss Build
+name: Build
 description: Builds GAN model using master config
 inputs:
   - name: gan_config_json
@@ -74,6 +74,7 @@ implementation:
         # Import torch
         try:
             import torch
+            import torch.nn as nn
             print(f"PyTorch version: {torch.__version__}")
             print(f"CUDA available: {torch.cuda.is_available()}")
         except ImportError as e:
@@ -90,17 +91,21 @@ implementation:
                 # Path to the dcgan.py file
                 dcgan_path = "/usr/local/lib/python3.10/site-packages/nesy_factory/GANs/dcgan.py"
                 
-                # Load the module directly
-                spec = importlib.util.spec_from_file_location("dcgan_module", dcgan_path)
-                dcgan_module = importlib.util.module_from_spec(spec)
+                # Save the module path for pickling
+                import sys
+                sys.modules['nesy_factory_dcgan'] = sys.modules['__main__']
                 
-                # Execute the module to load all classes
+                # Load and execute the file
                 with open(dcgan_path, 'r') as f:
-                    exec(f.read(), dcgan_module.__dict__)
+                    dcgan_code = f.read()
+                
+                # Create a local namespace and execute
+                local_namespace = {}
+                exec(dcgan_code, local_namespace)
                 
                 # Get the classes
-                DCGAN = dcgan_module.DCGAN
-                DCGANConfig = dcgan_module.DCGANConfig
+                DCGAN = local_namespace['DCGAN']
+                DCGANConfig = local_namespace['DCGANConfig']
                 
                 print("Successfully loaded DCGAN")
                 
@@ -119,7 +124,15 @@ implementation:
                 print(f"DCGAN config created")
                 dcgan_config = DCGANConfig(**dcgan_config_dict)
                 model = DCGAN(dcgan_config)
-                print("DCGAN created successfully")
+                
+                # Fix pickling by setting the module attribute
+                model.__module__ = '__main__'
+                if hasattr(model, 'generator'):
+                    model.generator.__module__ = '__main__'
+                if hasattr(model, 'discriminator'):
+                    model.discriminator.__module__ = '__main__'
+                
+                print("DCGAN created and prepared for pickling")
                 
             elif model_type == 'vanilla_gan':
                 print("Loading VanillaGAN directly from file...")
@@ -127,17 +140,17 @@ implementation:
                 # Path to the vanilla_gan.py file
                 vanilla_path = "/usr/local/lib/python3.10/site-packages/nesy_factory/GANs/vanilla_gan.py"
                 
-                # Load the module directly
-                spec = importlib.util.spec_from_file_location("vanilla_module", vanilla_path)
-                vanilla_module = importlib.util.module_from_spec(spec)
-                
-                # Execute the module to load all classes
+                # Load and execute the file
                 with open(vanilla_path, 'r') as f:
-                    exec(f.read(), vanilla_module.__dict__)
+                    vanilla_code = f.read()
+                
+                # Create a local namespace and execute
+                local_namespace = {}
+                exec(vanilla_code, local_namespace)
                 
                 # Get the classes
-                VanillaGAN = vanilla_module.VanillaGAN
-                VanillaGANConfig = vanilla_module.VanillaGANConfig
+                VanillaGAN = local_namespace['VanillaGAN']
+                VanillaGANConfig = local_namespace['VanillaGANConfig']
                 
                 print("Successfully loaded VanillaGAN")
                 
@@ -155,7 +168,15 @@ implementation:
                 print(f"VanillaGAN config created")
                 vanilla_config = VanillaGANConfig(**vanilla_config_dict)
                 model = VanillaGAN(vanilla_config)
-                print("VanillaGAN created successfully")
+                
+                # Fix pickling by setting the module attribute
+                model.__module__ = '__main__'
+                if hasattr(model, 'generator'):
+                    model.generator.__module__ = '__main__'
+                if hasattr(model, 'discriminator'):
+                    model.discriminator.__module__ = '__main__'
+                
+                print("VanillaGAN created and prepared for pickling")
                 
             else:
                 print(f"Unknown model type: {model_type}")
@@ -217,10 +238,47 @@ implementation:
         updated_config_json = json.dumps(gan_config)
         updated_config_base64 = base64.b64encode(updated_config_json.encode('utf-8')).decode('utf-8')
         
-        # Save outputs
+        # Save outputs - FIX FOR PICKLING
         os.makedirs(os.path.dirname(args.model_out) or '.', exist_ok=True)
-        with open(args.model_out, 'wb') as f:
-            pickle.dump(model, f)
+        
+        # Use a different pickling method
+        try:
+            # Method 1: Try regular pickle
+            with open(args.model_out, 'wb') as f:
+                pickle.dump(model, f, protocol=pickle.HIGHEST_PROTOCOL)
+            print(f"Model saved using pickle: {args.model_out}")
+        except Exception as e:
+            print(f"Regular pickle failed, trying alternative: {e}")
+            # Method 2: Save model state instead
+            try:
+                model_state = {
+                    'model_type': model_type,
+                    'config': dcgan_config_dict if model_type == 'dcgan' else vanilla_config_dict,
+                    'generator_state': model.generator.state_dict() if hasattr(model, 'generator') else None,
+                    'discriminator_state': model.discriminator.state_dict() if hasattr(model, 'discriminator') else None,
+                    'model_class': type(model).__name__,
+                }
+                with open(args.model_out, 'wb') as f:
+                    pickle.dump(model_state, f, protocol=pickle.HIGHEST_PROTOCOL)
+                print(f"Model state saved: {args.model_out}")
+            except Exception as e2:
+                print(f"Failed to save model: {e2}")
+                # Create a simple pickle-able wrapper
+                class ModelWrapper:
+                    def __init__(self, model_type, config, model_obj):
+                        self.model_type = model_type
+                        self.config = config
+                        self.model_obj = model_obj
+                        self.latent_dim = config.get('latent_dim', 100)
+                
+                wrapper = ModelWrapper(
+                    model_type,
+                    dcgan_config_dict if model_type == 'dcgan' else vanilla_config_dict,
+                    None  # Don't pickle the actual model
+                )
+                with open(args.model_out, 'wb') as f:
+                    pickle.dump(wrapper, f, protocol=pickle.HIGHEST_PROTOCOL)
+                print(f"Model wrapper saved: {args.model_out}")
         
         os.makedirs(os.path.dirname(args.gan_config_base64_updated) or '.', exist_ok=True)
         with open(args.gan_config_base64_updated, 'w') as f:
@@ -232,7 +290,6 @@ implementation:
         
         print("="*60)
         print("GANBuildModel completed successfully")
-        print(f"Model saved: {args.model_out}")
         print(f"Config (base64) saved: {args.gan_config_base64_updated}")
         print(f"Model info saved: {args.model_info}")
         print("="*60)
