@@ -1,4 +1,4 @@
-name: Upload Preprocessed Dataset to CDN
+name: 2 Upload Preprocessed Dataset to CDN
 description: Uploads preprocessed train and test datasets as .pkl files to CDN.
 inputs:
   - name: train_data
@@ -41,11 +41,13 @@ outputs:
     description: "Metadata about uploaded datasets"
 implementation:
   container:
-    image: python:3.8-slim
+    image: gurpreetgandhi/nesy-factory:v34
     command:
       - sh
       - -c
       - |
+        pip install torchvision==0.15.2 --quiet
+        echo "Torchvision installed"
         if ! command -v curl &> /dev/null; then
             apt-get update > /dev/null && apt-get install -y curl > /dev/null
         fi
@@ -55,6 +57,42 @@ implementation:
       - -c
       - |
         import sys, os, subprocess, json, pickle, tempfile, time, argparse
+        import torch
+        from torch.utils.data import Dataset
+        
+        # Define GANDataset class here so it's available when unpickling
+        class GANDataset(Dataset):
+            def __init__(self, data_list, transform=None, model_type='dcgan', target_size=64, channels=3):
+                self.data_list = data_list
+                self.transform = transform
+                self.model_type = model_type
+                self.target_size = target_size
+                self.channels = channels
+            
+            def __len__(self):
+                return len(self.data_list)
+            
+            def __getitem__(self, idx):
+                item = self.data_list[idx]
+                try:
+                    import base64
+                    import io
+                    from PIL import Image
+                    img_data = base64.b64decode(item['image_data'])
+                    img = Image.open(io.BytesIO(img_data))
+                    
+                    if self.channels == 1 and img.mode != 'L':
+                        img = img.convert('L')
+                    elif self.channels == 3 and img.mode != 'RGB':
+                        img = img.convert('RGB')
+                    
+                    if self.transform:
+                        img = self.transform(img)
+                    
+                    return img
+                except Exception as e:
+                    print(f"Error processing image {idx}: {e}")
+                    return torch.zeros(self.channels, self.target_size, self.target_size)
         
         parser = argparse.ArgumentParser()
         parser.add_argument('--train_data_path', type=str, required=True)
@@ -120,18 +158,42 @@ implementation:
                 print(f'JSON parse error: {e}')
                 return None
         
-        # Load datasets
-        with open(args.train_data_path, 'rb') as f:
-            train_data = pickle.load(f)
+        # Load datasets - use try-except for pickle loading
+        try:
+            with open(args.train_data_path, 'rb') as f:
+                train_data = pickle.load(f)
+            print(f"Loaded train data: {len(train_data)} samples" if hasattr(train_data, '__len__') else "Loaded train data")
+        except Exception as e:
+            print(f"Error loading train data: {e}")
+            train_data = []
         
-        with open(args.test_data_path, 'rb') as f:
-            test_data = pickle.load(f)
+        try:
+            with open(args.test_data_path, 'rb') as f:
+                test_data = pickle.load(f)
+            print(f"Loaded test data: {len(test_data)} samples" if hasattr(test_data, '__len__') else "Loaded test data")
+        except Exception as e:
+            print(f"Error loading test data: {e}")
+            test_data = []
         
-        with open(args.preprocessed_data_path, 'rb') as f:
-            preprocessed_data = pickle.load(f)
+        try:
+            with open(args.preprocessed_data_path, 'rb') as f:
+                preprocessed_data = pickle.load(f)
+            print(f"Loaded preprocessed data")
+            if isinstance(preprocessed_data, dict) and 'dataset' in preprocessed_data:
+                print(f"  Dataset size: {len(preprocessed_data['dataset'])} samples")
+                print(f"  Model type: {preprocessed_data.get('model_type', 'unknown')}")
+                print(f"  Image size: {preprocessed_data.get('image_size', 'unknown')}")
+        except Exception as e:
+            print(f"Error loading preprocessed data: {e}")
+            preprocessed_data = {}
         
-        with open(args.dataset_info_path, 'rb') as f:
-            dataset_info = pickle.load(f)
+        try:
+            with open(args.dataset_info_path, 'rb') as f:
+                dataset_info = pickle.load(f)
+            print(f"Loaded dataset info")
+        except Exception as e:
+            print(f"Error loading dataset info: {e}")
+            dataset_info = {}
         
         # Create dataset metadata
         timestamp = time.strftime('%Y%m%d_%H%M%S')
@@ -144,45 +206,57 @@ implementation:
         with tempfile.TemporaryDirectory() as temp_dir:
             # 1. Save train dataset as .pkl file
             train_file_path = os.path.join(temp_dir, f'{base_filename}_train.pkl')
-            with open(train_file_path, 'wb') as f:
-                pickle.dump({
-                    'data': train_data,
-                    'dataset_info': dataset_info,
-                    'data_type': 'train',
-                    'timestamp': timestamp,
-                    'num_samples': len(train_data) if hasattr(train_data, '__len__') else 0
-                }, f)
-            
-            print(f'Saved train dataset to: {train_file_path}')
-            train_url = upload_file_to_cdn(train_file_path, f'{base_filename}_train.pkl')
+            try:
+                with open(train_file_path, 'wb') as f:
+                    pickle.dump({
+                        'data': train_data,
+                        'dataset_info': dataset_info,
+                        'data_type': 'train',
+                        'timestamp': timestamp,
+                        'num_samples': len(train_data) if hasattr(train_data, '__len__') else 0,
+                        'pickle_protocol': pickle.HIGHEST_PROTOCOL
+                    }, f, protocol=pickle.HIGHEST_PROTOCOL)
+                print(f'Saved train dataset to: {train_file_path}')
+                train_url = upload_file_to_cdn(train_file_path, f'{base_filename}_train.pkl')
+            except Exception as e:
+                print(f'Error saving train dataset: {e}')
             
             # 2. Save test dataset as .pkl file
             test_file_path = os.path.join(temp_dir, f'{base_filename}_test.pkl')
-            with open(test_file_path, 'wb') as f:
-                pickle.dump({
-                    'data': test_data,
-                    'dataset_info': dataset_info,
-                    'data_type': 'test',
-                    'timestamp': timestamp,
-                    'num_samples': len(test_data) if hasattr(test_data, '__len__') else 0
-                }, f)
-            
-            print(f'Saved test dataset to: {test_file_path}')
-            test_url = upload_file_to_cdn(test_file_path, f'{base_filename}_test.pkl')
+            try:
+                with open(test_file_path, 'wb') as f:
+                    pickle.dump({
+                        'data': test_data,
+                        'dataset_info': dataset_info,
+                        'data_type': 'test',
+                        'timestamp': timestamp,
+                        'num_samples': len(test_data) if hasattr(test_data, '__len__') else 0,
+                        'pickle_protocol': pickle.HIGHEST_PROTOCOL
+                    }, f, protocol=pickle.HIGHEST_PROTOCOL)
+                print(f'Saved test dataset to: {test_file_path}')
+                test_url = upload_file_to_cdn(test_file_path, f'{base_filename}_test.pkl')
+            except Exception as e:
+                print(f'Error saving test dataset: {e}')
             
             # 3. Save preprocessed dataset as .pkl file
             preprocessed_file_path = os.path.join(temp_dir, f'{base_filename}_preprocessed.pkl')
-            with open(preprocessed_file_path, 'wb') as f:
-                pickle.dump({
-                    'data': preprocessed_data,
-                    'dataset_info': dataset_info,
-                    'data_type': 'preprocessed',
-                    'timestamp': timestamp,
-                    'preprocessing_info': 'GAN-ready preprocessed data'
-                }, f)
-            
-            print(f'Saved preprocessed dataset to: {preprocessed_file_path}')
-            preprocessed_url = upload_file_to_cdn(preprocessed_file_path, f'{base_filename}_preprocessed.pkl')
+            try:
+                with open(preprocessed_file_path, 'wb') as f:
+                    # For preprocessed data, we need to handle the GANDataset class
+                    pickle.dump({
+                        'data': preprocessed_data,
+                        'dataset_info': dataset_info,
+                        'data_type': 'preprocessed',
+                        'timestamp': timestamp,
+                        'preprocessing_info': 'GAN-ready preprocessed data',
+                        'pickle_protocol': pickle.HIGHEST_PROTOCOL
+                    }, f, protocol=pickle.HIGHEST_PROTOCOL)
+                print(f'Saved preprocessed dataset to: {preprocessed_file_path}')
+                preprocessed_url = upload_file_to_cdn(preprocessed_file_path, f'{base_filename}_preprocessed.pkl')
+            except Exception as e:
+                print(f'Error saving preprocessed dataset: {e}')
+                import traceback
+                traceback.print_exc()
         
         # Create dataset metadata
         dataset_metadata = {
@@ -201,7 +275,7 @@ implementation:
             'statistics': {
                 'train_samples': len(train_data) if hasattr(train_data, '__len__') else 0,
                 'test_samples': len(test_data) if hasattr(test_data, '__len__') else 0,
-                'dataset_info': dataset_info
+                'preprocessed_data_keys': list(preprocessed_data.keys()) if isinstance(preprocessed_data, dict) else []
             },
             'upload_status': {
                 'train_uploaded': train_url is not None,
@@ -210,6 +284,15 @@ implementation:
                 'upload_time': time.strftime('%Y-%m-%d %H:%M:%S')
             }
         }
+        
+        # Add dataset info if available
+        if isinstance(dataset_info, dict):
+            dataset_metadata['dataset_info_summary'] = {
+                'total_samples': dataset_info.get('total_samples', 'unknown'),
+                'classes': dataset_info.get('classes', []),
+                'dataset_type': dataset_info.get('dataset_type', 'unknown'),
+                'dataset_name': dataset_info.get('dataset_name', 'unknown')
+            }
         
         # Save outputs
         os.makedirs(os.path.dirname(args.train_data_cdn_url_path) or '.', exist_ok=True)
@@ -228,11 +311,21 @@ implementation:
         with open(args.dataset_metadata_path, 'w') as f:
             json.dump(dataset_metadata, f, indent=2)
         
+        print('='*60)
         print('Dataset CDN Upload Summary:')
         print(f'  Train dataset uploaded: {"Yes" if train_url else "No"}')
         print(f'  Test dataset uploaded: {"Yes" if test_url else "No"}')
         print(f'  Preprocessed dataset uploaded: {"Yes" if preprocessed_url else "No"}')
         print(f'  Dataset metadata saved to: {args.dataset_metadata_path}')
+        
+        if train_url:
+            print(f'  Train dataset URL: {train_url}')
+        if test_url:
+            print(f'  Test dataset URL: {test_url}')
+        if preprocessed_url:
+            print(f'  Preprocessed dataset URL: {preprocessed_url}')
+        
+        print('='*60)
     args:
       - --train_data_path
       - {inputPath: train_data}
