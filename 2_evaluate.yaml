@@ -1,16 +1,21 @@
-name: Evaluate
+name: GANEvaluate
 description: Evaluates GAN model using nesy_factory.GANs evaluation functions
 inputs:
   - name: trained_model
     type: Model
+    description: Trained GAN model from GANTrain
   - name: test_data
     type: Dataset
+    description: Test dataset from LoadDataset
   - name: training_history
     type: String
+    description: Training history JSON string from GANTrain
   - name: gan_config
     type: String
+    description: GAN configuration JSON string
   - name: eval_config
     type: String
+    description: Evaluation configuration JSON string
 outputs:
   - name: eval_metrics
     type: String
@@ -28,77 +33,100 @@ implementation:
       - sh
       - -c
       - |
-        exec python3 -u -c "
-        import sys
+        exec "$0" "$@"
+      - python3
+      - -u
+      - -c
+      - |
+        import argparse
         import os
         import json
         import pickle
-        import traceback
         import time
         import torch
-        from torch.utils.data import DataLoader
-
-        print('STARTING GAN EVALUATION')
-
-        trained_model_path = sys.argv[1]
-        test_data_path = sys.argv[2]
-        training_history_path = sys.argv[3]
-        gan_config_path = sys.argv[4]
-        eval_config_str = sys.argv[5]
-        eval_metrics_path = sys.argv[6]
-        evaluation_samples_path = sys.argv[7]
-        evaluation_report_path = sys.argv[8]
-        quality_assessment_path = sys.argv[9]
-
+        import torchvision.transforms as transforms
+        
+        parser = argparse.ArgumentParser(description='GAN Evaluation')
+        parser.add_argument('--trained_model', type=str, required=True, help='Path to trained model')
+        parser.add_argument('--test_data', type=str, required=True, help='Path to test data')
+        parser.add_argument('--training_history', type=str, required=True, help='Training history JSON string')
+        parser.add_argument('--gan_config', type=str, required=True, help='GAN configuration JSON string')
+        parser.add_argument('--eval_config', type=str, required=True, help='Evaluation configuration JSON string')
+        parser.add_argument('--eval_metrics', type=str, required=True, help='Output path for evaluation metrics')
+        parser.add_argument('--evaluation_samples', type=str, required=True, help='Output path for evaluation samples')
+        parser.add_argument('--evaluation_report', type=str, required=True, help='Output path for evaluation report')
+        parser.add_argument('--quality_assessment', type=str, required=True, help='Output path for quality assessment')
+        args = parser.parse_args()
+        
+        print("GAN EVALUATION STARTING")
+        print("Input Arguments:")
+        print(f"  trained_model: {args.trained_model}")
+        print(f"  test_data: {args.test_data}")
+        print(f"  training_history length: {len(args.training_history)}")
+        print(f"  gan_config length: {len(args.gan_config)}")
+        print(f"  eval_config length: {len(args.eval_config)}")
+        
         start_time = time.time()
-
-        with open(trained_model_path, 'rb') as f:
+        
+        with open(args.trained_model, 'rb') as f:
             gan_model = pickle.load(f)
-        print('Model loaded: ' + str(type(gan_model).__name__))
-
-        with open(test_data_path, 'rb') as f:
+        print(f"Model loaded: {type(gan_model).__name__}")
+        
+        with open(args.test_data, 'rb') as f:
             test_data_content = pickle.load(f)
-
-        with open(gan_config_path, 'r') as f:
-            gan_config = json.load(f)
-
-        with open(training_history_path, 'r') as f:
-            training_history = json.load(f)
-
-        eval_config = json.loads(eval_config_str) if eval_config_str else {}
-
-        print('PyTorch version: ' + torch.__version__)
-        print('CUDA available: ' + str(torch.cuda.is_available()))
-
-        # Try to import evaluation functions from nesy_factory.GANs.dcgan
+        print(f"Test data loaded. Type: {type(test_data_content)}")
+        
+        try:
+            gan_config = json.loads(args.gan_config)
+            print("GAN config parsed successfully")
+        except Exception as e:
+            print(f"Failed to parse GAN config: {e}")
+            gan_config = {}
+        
+        try:
+            eval_config = json.loads(args.eval_config)
+            print("Evaluation config parsed successfully")
+        except Exception as e:
+            print(f"Failed to parse evaluation config: {e}")
+            eval_config = {}
+        
+        try:
+            training_history = json.loads(args.training_history)
+            print("Training history parsed successfully")
+        except Exception as e:
+            print(f"Failed to parse training history: {e}")
+            training_history = {}
+        
+        print(f"PyTorch version: {torch.__version__}")
+        print(f"CUDA available: {torch.cuda.is_available()}")
+        
         try:
             from nesy_factory.GANs.dcgan import compute_fid_score, compute_inception_score
-            print('Imported evaluation functions from nesy_factory.GANs.dcgan')
+            print("Imported evaluation functions from nesy_factory.GANs.dcgan")
         except ImportError as e:
-            print('Could not import evaluation functions: ' + str(e))
+            print(f"Could not import evaluation functions: {e}")
             compute_fid_score = None
             compute_inception_score = None
-
+        
         model_type = gan_config.get('model_type', 'dcgan')
-        print('Evaluating ' + model_type.upper() + ' GAN')
-
+        print(f"Evaluating {model_type.upper()} GAN")
+        
         num_samples = eval_config.get('num_samples', 100)
         calculate_fid = eval_config.get('calculate_fid', True) and compute_fid_score is not None
         calculate_is = eval_config.get('calculate_is', True) and compute_inception_score is not None
-
+        
         test_data = []
         if isinstance(test_data_content, list):
             test_data = test_data_content
-            print('Test data is list with ' + str(len(test_data)) + ' items')
+            print(f"Test data is list with {len(test_data)} items")
         elif isinstance(test_data_content, dict):
-            print('Test data is dict, extracting images')
-            # Extract images from dict format
+            print("Test data is dict, extracting images")
             for item in test_data_content:
                 if isinstance(item, dict) and 'image_data' in item:
                     test_data.append(item)
-        print('Total test samples: ' + str(len(test_data)))
-
-        # Prepare real images for FID calculation
+        
+        print(f"Total test samples: {len(test_data)}")
+        
         real_images = []
         if test_data:
             for i in range(min(100, len(test_data))):
@@ -108,227 +136,228 @@ implementation:
                         import base64
                         import io
                         from PIL import Image
-                        import torchvision.transforms as transforms
-
+                        
                         img_data = base64.b64decode(item['image_data'])
                         img = Image.open(io.BytesIO(img_data))
-
-                        # Convert to tensor
+                        
                         transform = transforms.Compose([
                             transforms.Resize((64, 64)),
                             transforms.ToTensor(),
                             transforms.Normalize((0.5,), (0.5,))
                         ])
-
+                        
                         img_tensor = transform(img)
                         if img_tensor.shape[0] == 1:
                             img_tensor = img_tensor.repeat(3, 1, 1)
                         real_images.append(img_tensor.unsqueeze(0))
-                except:
+                except Exception:
                     continue
-
+        
         if real_images:
             real_images = torch.cat(real_images, dim=0)
-            print('Prepared ' + str(len(real_images)) + ' real images for evaluation')
+            print(f"Prepared {len(real_images)} real images for evaluation")
         else:
-            print('Could not prepare real images, using dummy')
+            print("Could not prepare real images, using dummy")
             real_images = torch.randn(min(100, num_samples), 3, 64, 64)
-
-        # Generate fake images
+        
         fake_images = []
         try:
             if hasattr(gan_model, 'generate'):
                 num_to_generate = min(100, num_samples)
                 fake_images_tensor = gan_model.generate(num_to_generate)
-
-                # Ensure proper shape
+                
                 if fake_images_tensor.dim() == 2:
-                    # For VanillaGAN, reshape to image
                     if model_type == 'vanilla_gan':
                         import math
                         size = int(math.sqrt(fake_images_tensor.shape[1] / 3))
                         fake_images_tensor = fake_images_tensor.view(-1, 3, size, size)
-
+                
                 fake_images = fake_images_tensor
-                print('Generated ' + str(len(fake_images)) + ' fake images')
+                print(f"Generated {len(fake_images)} fake images")
             elif hasattr(gan_model, 'generator'):
                 latent_dim = gan_config.get('latent_dim', 100)
                 device = next(gan_model.generator.parameters()).device
-
+                
                 if model_type == 'dcgan':
                     noise = torch.randn(min(100, num_samples), latent_dim, 1, 1, device=device)
                 else:
                     noise = torch.randn(min(100, num_samples), latent_dim, device=device)
-
+                
                 with torch.no_grad():
                     gan_model.generator.eval()
                     fake_images = gan_model.generator(noise).cpu()
-
-                print('Generated ' + str(len(fake_images)) + ' fake images via generator')
+                
+                print(f"Generated {len(fake_images)} fake images via generator")
             else:
-                print('Cannot generate images from model')
+                print("Cannot generate images from model")
                 fake_images = torch.randn(min(100, num_samples), 3, 64, 64)
-
+                
         except Exception as e:
-            print('Error generating fake images: ' + str(e))
+            print(f"Error generating fake images: {e}")
             fake_images = torch.randn(min(100, num_samples), 3, 64, 64)
-
+        
         eval_metrics = {
             'model_type': model_type,
             'evaluation_time': time.strftime('%Y-%m-%d %H:%M:%S'),
             'num_samples_evaluated': min(len(real_images), len(fake_images)) if isinstance(fake_images, torch.Tensor) else 0
         }
-
-        # Calculate FID Score
+        
         if calculate_fid and len(real_images) >= 10 and isinstance(fake_images, torch.Tensor) and len(fake_images) >= 10:
             try:
                 device = 'cuda' if torch.cuda.is_available() else 'cpu'
                 fid_score = compute_fid_score(real_images[:10], fake_images[:10], torch.device(device))
                 eval_metrics['fid_score'] = float(fid_score)
-                print('FID Score: ' + str(round(fid_score, 2)))
+                print(f"FID Score: {fid_score:.2f}")
             except Exception as e:
-                print('FID calculation failed: ' + str(e))
+                print(f"FID calculation failed: {e}")
                 eval_metrics['fid_score'] = float('inf')
         else:
             eval_metrics['fid_score'] = float('inf')
-            print('Skipping FID calculation')
-
-        # Calculate Inception Score
+            print("Skipping FID calculation")
+        
         if calculate_is and isinstance(fake_images, torch.Tensor) and len(fake_images) >= 10:
             try:
                 device = 'cuda' if torch.cuda.is_available() else 'cpu'
                 is_mean, is_std = compute_inception_score(fake_images[:10], torch.device(device))
                 eval_metrics['inception_score_mean'] = float(is_mean)
                 eval_metrics['inception_score_std'] = float(is_std)
-                print('Inception Score: ' + str(round(is_mean, 2)) + ' +/- ' + str(round(is_std, 2)))
+                print(f"Inception Score: {is_mean:.2f} +/- {is_std:.2f}")
             except Exception as e:
-                print('Inception Score calculation failed: ' + str(e))
+                print(f"Inception Score calculation failed: {e}")
                 eval_metrics['inception_score_mean'] = 0.0
                 eval_metrics['inception_score_std'] = 0.0
         else:
             eval_metrics['inception_score_mean'] = 0.0
             eval_metrics['inception_score_std'] = 0.0
-            print('Skipping Inception Score calculation')
-
-        # Generate evaluation samples
+            print("Skipping Inception Score calculation")
+        
         evaluation_samples = []
         if isinstance(fake_images, torch.Tensor) and len(fake_images) > 0:
             for i in range(min(16, len(fake_images))):
                 try:
                     sample_img = fake_images[i]
-
+                    
                     if sample_img.dim() == 4:
                         sample_img = sample_img.squeeze(0)
-
+                    
                     import numpy as np
                     from PIL import Image
-
-                    # Normalize to [0, 1]
+                    
                     sample_img = (sample_img + 1) / 2
                     sample_img = torch.clamp(sample_img, 0, 1)
-
+                    
                     if sample_img.shape[0] == 1:
                         img_np = sample_img.squeeze(0).numpy()
                         img_pil = Image.fromarray((img_np * 255).astype(np.uint8), mode='L')
                     else:
                         img_np = sample_img.permute(1, 2, 0).numpy()
                         img_pil = Image.fromarray((img_np * 255).astype(np.uint8), mode='RGB')
-
+                    
                     import io
                     img_bytes = io.BytesIO()
                     img_pil.save(img_bytes, format='PNG')
                     import base64
                     base64_data = base64.b64encode(img_bytes.getvalue()).decode('utf-8')
-
+                    
                     evaluation_samples.append({
                         'sample_id': i,
                         'image_data': base64_data,
-                        'filename': model_type + '_eval_sample_' + str(i) + '.png',
+                        'filename': f'{model_type}_eval_sample_{i}.png',
                         'evaluation_ready': True
                     })
-                except:
+                except Exception:
                     continue
-
-        print('Created ' + str(len(evaluation_samples)) + ' evaluation samples')
-
-        # Create evaluation report
+        
+        print(f"Created {len(evaluation_samples)} evaluation samples")
+        
         evaluation_report = 'GAN EVALUATION REPORT\\n'
         evaluation_report += '='*50 + '\\n'
-        evaluation_report += 'Model Type: ' + model_type.upper() + '\\n'
-        evaluation_report += 'Evaluation Time: ' + eval_metrics['evaluation_time'] + '\\n'
-        evaluation_report += 'Samples Evaluated: ' + str(eval_metrics['num_samples_evaluated']) + '\\n'
-        evaluation_report += '\\nQUANTITATIVE METRICS:\\n'
+        evaluation_report += f'Model Type: {model_type.upper()}\\n'
+        evaluation_report += f'Evaluation Time: {eval_metrics["evaluation_time"]}\\n'
+        evaluation_report += f'Samples Evaluated: {eval_metrics["num_samples_evaluated"]}\\n'
+        evaluation_report += '\\nQUANTITATIVE METRICS:\n'
         evaluation_report += '-'*20 + '\\n'
-        evaluation_report += 'FID Score: ' + str(round(eval_metrics.get('fid_score', 0), 2)) + '\\n'
-        evaluation_report += 'Inception Score: ' + str(round(eval_metrics.get('inception_score_mean', 0), 2)) + ' +/- ' + str(round(eval_metrics.get('inception_score_std', 0), 2)) + '\\n'
+        evaluation_report += f'FID Score: {eval_metrics.get("fid_score", 0):.2f}\\n'
+        evaluation_report += f'Inception Score: {eval_metrics.get("inception_score_mean", 0):.2f} +/- {eval_metrics.get("inception_score_std", 0):.2f}\\n'
         evaluation_report += '\\nQUALITY ASSESSMENT:\\n'
         evaluation_report += '-'*20 + '\\n'
-
-        quality_scores = {
-            'fid_quality': 'Excellent' if eval_metrics.get('fid_score', 999) < 50 else 
-                          'Good' if eval_metrics.get('fid_score', 999) < 100 else 
-                          'Fair' if eval_metrics.get('fid_score', 999) < 200 else 'Poor',
-            'is_quality': 'Excellent' if eval_metrics.get('inception_score_mean', 0) > 8 else 
-                         'Good' if eval_metrics.get('inception_score_mean', 0) > 6 else 
-                         'Fair' if eval_metrics.get('inception_score_mean', 0) > 4 else 'Poor',
-            'overall_quality': '',
-            'recommendations': []
-        }
-
-        if quality_scores['fid_quality'] == 'Excellent' and quality_scores['is_quality'] == 'Excellent':
-            quality_scores['overall_quality'] = 'Excellent'
-        elif quality_scores['fid_quality'] in ['Excellent', 'Good'] and quality_scores['is_quality'] in ['Excellent', 'Good']:
-            quality_scores['overall_quality'] = 'Good'
+        
+        fid_score = eval_metrics.get('fid_score', 999)
+        is_score = eval_metrics.get('inception_score_mean', 0)
+        
+        fid_quality = 'Excellent' if fid_score < 50 else 'Good' if fid_score < 100 else 'Fair' if fid_score < 200 else 'Poor'
+        is_quality = 'Excellent' if is_score > 8 else 'Good' if is_score > 6 else 'Fair' if is_score > 4 else 'Poor'
+        
+        if fid_quality == 'Excellent' and is_quality == 'Excellent':
+            overall_quality = 'Excellent'
+        elif fid_quality in ['Excellent', 'Good'] and is_quality in ['Excellent', 'Good']:
+            overall_quality = 'Good'
         else:
-            quality_scores['overall_quality'] = 'Needs Improvement'
-
-        if eval_metrics.get('fid_score', 999) > 100:
-            quality_scores['recommendations'].append('Increase training epochs for better FID score')
-        if eval_metrics.get('inception_score_mean', 0) < 4:
-            quality_scores['recommendations'].append('Try different architecture or training algorithm')
-
-        evaluation_report += 'FID Quality: ' + quality_scores['fid_quality'] + '\\n'
-        evaluation_report += 'Inception Score Quality: ' + quality_scores['is_quality'] + '\\n'
-        evaluation_report += 'Overall Quality: ' + quality_scores['overall_quality'] + '\\n'
+            overall_quality = 'Needs Improvement'
+        
+        recommendations = []
+        if fid_score > 100:
+            recommendations.append('Increase training epochs for better FID score')
+        if is_score < 4:
+            recommendations.append('Try different architecture or training algorithm')
+        
+        evaluation_report += f'FID Quality: {fid_quality}\\n'
+        evaluation_report += f'Inception Score Quality: {is_quality}\\n'
+        evaluation_report += f'Overall Quality: {overall_quality}\\n'
         evaluation_report += '\\nRECOMMENDATIONS:\\n'
         evaluation_report += '-'*20 + '\\n'
-
-        for rec in quality_scores['recommendations']:
-            evaluation_report += '- ' + rec + '\\n'
-
-        evaluation_report += '\\nEVALUATION TIME: ' + str(round(time.time() - start_time, 2)) + ' seconds\\n'
-
-        # Save outputs
-        os.makedirs(os.path.dirname(eval_metrics_path) or '.', exist_ok=True)
-        with open(eval_metrics_path, 'w') as f:
+        
+        for rec in recommendations:
+            evaluation_report += f'- {rec}\\n'
+        
+        evaluation_report += f'\\nEVALUATION TIME: {time.time() - start_time:.2f} seconds\\n'
+        
+        quality_scores = {
+            'fid_quality': fid_quality,
+            'is_quality': is_quality,
+            'overall_quality': overall_quality,
+            'recommendations': recommendations
+        }
+        
+        os.makedirs(os.path.dirname(args.eval_metrics) or '.', exist_ok=True)
+        with open(args.eval_metrics, 'w') as f:
             json.dump(eval_metrics, f, indent=2)
-
-        os.makedirs(os.path.dirname(evaluation_samples_path) or '.', exist_ok=True)
-        with open(evaluation_samples_path, 'wb') as f:
+        
+        os.makedirs(os.path.dirname(args.evaluation_samples) or '.', exist_ok=True)
+        with open(args.evaluation_samples, 'wb') as f:
             pickle.dump(evaluation_samples, f)
-
-        os.makedirs(os.path.dirname(evaluation_report_path) or '.', exist_ok=True)
-        with open(evaluation_report_path, 'w') as f:
+        
+        os.makedirs(os.path.dirname(args.evaluation_report) or '.', exist_ok=True)
+        with open(args.evaluation_report, 'w') as f:
             f.write(evaluation_report)
-
-        os.makedirs(os.path.dirname(quality_assessment_path) or '.', exist_ok=True)
-        with open(quality_assessment_path, 'w') as f:
+        
+        os.makedirs(os.path.dirname(args.quality_assessment) or '.', exist_ok=True)
+        with open(args.quality_assessment, 'w') as f:
             json.dump(quality_scores, f, indent=2)
+        
+        print("GANEvaluate completed successfully")
+        print(f"Evaluation metrics: {args.eval_metrics}")
+        print(f"Evaluation samples: {args.evaluation_samples}")
+        print(f"Evaluation report: {args.evaluation_report}")
+        print(f"Quality assessment: {args.quality_assessment}")
+        print(f"Total evaluation time: {time.time() - start_time:.2f} seconds")
 
-        print('GAN Evaluation Completed')
-        print('Evaluation metrics saved to: ' + eval_metrics_path)
-        print('Evaluation samples saved to: ' + evaluation_samples_path)
-        print('Evaluation report saved to: ' + evaluation_report_path)
-        print('Quality assessment saved to: ' + quality_assessment_path)
-        print('Total evaluation time: ' + str(round(time.time() - start_time, 2)) + ' seconds')
-        " "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"
     args:
+      - --trained_model
       - {inputPath: trained_model}
+      - --test_data
       - {inputPath: test_data}
+      - --training_history
       - {inputPath: training_history}
+      - --gan_config
       - {inputPath: gan_config}
+      - --eval_config
       - {inputValue: eval_config}
+      - --eval_metrics
       - {outputPath: eval_metrics}
+      - --evaluation_samples
       - {outputPath: evaluation_samples}
+      - --evaluation_report
       - {outputPath: evaluation_report}
+      - --quality_assessment
       - {outputPath: quality_assessment}
