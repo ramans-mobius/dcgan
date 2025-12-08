@@ -33,6 +33,7 @@ outputs:
   - name: model_metadata
     type: String
     description: "Metadata about uploaded model"
+
 implementation:
   container:
     image: python:3.8-slim
@@ -73,13 +74,13 @@ implementation:
         
         # Function to upload file to CDN
         def upload_file_to_cdn(file_path, filename):
-            print(f'Uploading {filename}...')
+            print('Uploading {}...'.format(filename))
             
             curl_command = [
                 "curl",
                 "--location", upload_url,
-                "--header", f"Authorization: Bearer {bearer_token}",
-                "--form", f"file=@{file_path}",
+                "--header", "Authorization: Bearer {}".format(bearer_token),
+                "--form", "file=@{}".format(file_path),
                 "--fail",
                 "--show-error",
                 "--silent"
@@ -101,15 +102,15 @@ implementation:
                     return None
                 
                 full_url = f"{args.get_cdn}{relative_cdn_url}"
-                print(f'Upload successful: {full_url}')
+                print('Upload successful: {}'.format(full_url))
                 return full_url
                 
             except subprocess.CalledProcessError as e:
-                print(f'Curl error: {e.returncode}')
-                print(f'Error output: {e.stderr}')
+                print('Curl error: {}'.format(e.returncode))
+                print('Error output: {}'.format(e.stderr))
                 return None
             except json.JSONDecodeError as e:
-                print(f'JSON parse error: {e}')
+                print('JSON parse error: {}'.format(e))
                 return None
         
         # Load model and configurations
@@ -132,7 +133,7 @@ implementation:
         
         with tempfile.TemporaryDirectory() as temp_dir:
             # 1. Save model as .pt file
-            model_file_path = os.path.join(temp_dir, f'{base_filename}.pt')
+            model_file_path = os.path.join(temp_dir, '{}.pt'.format(base_filename))
             
             # Extract model state dicts
             model_data = {
@@ -156,17 +157,21 @@ implementation:
                     if hasattr(gan_model.trainer, 'discriminator'):
                         model_data['discriminator_state_dict'] = gan_model.trainer.discriminator.state_dict()
             except Exception as e:
-                print(f'Warning: Could not extract model state dicts: {e}')
+                print('Warning: Could not extract model state dicts: {}'.format(e))
             
             # Save model as .pt file
-            torch.save(model_data, model_file_path)
-            print(f'Saved model to: {model_file_path}')
-            
-            # Upload model .pt file
-            model_url = upload_file_to_cdn(model_file_path, f'{base_filename}.pt')
+            try:
+                import torch
+                torch.save(model_data, model_file_path)
+                print('Saved model to: {}'.format(model_file_path))
+                
+                # Upload model .pt file
+                model_url = upload_file_to_cdn(model_file_path, '{}.pt'.format(base_filename))
+            except ImportError:
+                print('Error: torch not available for saving .pt file')
             
             # 2. Save configuration as JSON
-            config_file_path = os.path.join(temp_dir, f'{base_filename}_config.json')
+            config_file_path = os.path.join(temp_dir, '{}_config.json'.format(base_filename))
             with open(config_file_path, 'w') as f:
                 json.dump({
                     'gan_config': gan_config,
@@ -176,15 +181,15 @@ implementation:
                 }, f, indent=2)
             
             # Upload configuration
-            config_url = upload_file_to_cdn(config_file_path, f'{base_filename}_config.json')
+            config_url = upload_file_to_cdn(config_file_path, '{}_config.json'.format(base_filename))
         
         # Create model metadata
         model_metadata = {
             'model_name': args.model_name,
             'model_type': model_type,
             'timestamp': timestamp,
-            'model_filename': f'{base_filename}.pt',
-            'config_filename': f'{base_filename}_config.json',
+            'model_filename': '{}.pt'.format(base_filename),
+            'config_filename': '{}_config.json'.format(base_filename),
             'model_url': model_url if model_url else '',
             'config_url': config_url if config_url else '',
             'upload_status': {
@@ -214,9 +219,10 @@ implementation:
             json.dump(model_metadata, f, indent=2)
         
         print('GAN Model CDN Upload Summary:')
-        print(f'  Model uploaded: {'Yes' if model_url else 'No'}')
-        print(f'  Config uploaded: {'Yes' if config_url else 'No'}')
-        print(f'  Model metadata saved to: {args.model_metadata_path}')
+        print('  Model uploaded: {}'.format('Yes' if model_url else 'No'))
+        print('  Config uploaded: {}'.format('Yes' if config_url else 'No'))
+        print('  Model metadata saved to: {}'.format(args.model_metadata_path))
+
     args:
       - --trained_model_path
       - {inputPath: trained_model}
