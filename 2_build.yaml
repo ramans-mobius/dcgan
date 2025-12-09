@@ -1,4 +1,4 @@
-name: 2 Build
+name: Build
 description: Builds GAN model using master config
 inputs:
   - name: gan_config_json
@@ -50,35 +50,81 @@ implementation:
         
         print("GAN MODEL BUILDER STARTING")
         print("="*60)
-        print(f"gan_config_json length: {len(args.gan_config_json)}")
         print(f"model_name: {args.model_name}")
+        print(f"gan_config_json length: {len(args.gan_config_json)} characters")
+        print("\\n=== FULL CONFIG JSON ===")
+        print(args.gan_config_json)
+        print("=== END CONFIG JSON ===")
         
         # Parse JSON config
         try:
             gan_config = json.loads(args.gan_config_json)
-            print("Master GAN config parsed successfully")
+            print("\\n Master GAN config parsed successfully")
+            
+            # Print parsed config structure
+            print("\\n=== PARSED CONFIG STRUCTURE ===")
+            print(f"Pipeline name: {gan_config.get('pipeline_name', 'N/A')}")
+            print(f"Version: {gan_config.get('version', 'N/A')}")
+            
+            # Dataset config
+            dataset_config = gan_config.get('dataset', {})
+            print(f"\\n DATASET CONFIG:")
+            print(f"  Dataset name: {dataset_config.get('dataset_name', 'N/A')}")
+            print(f"  Image size: {dataset_config.get('image_size', 'N/A')}")
+            print(f"  Channels: {dataset_config.get('channels', 'N/A')} (CRITICAL: should be 1 for MNIST)")
+            print(f"  Train split: {dataset_config.get('train_split', 'N/A')}")
+            print(f"  Batch size: {dataset_config.get('batch_size', 'N/A')}")
+            
+            # Model config
+            model_config = gan_config.get('model', {})
+            print(f"\\n MODEL CONFIG:")
+            print(f"  GAN type: {model_config.get('gan_type', 'N/A')}")
+            print(f"  Architecture: {model_config.get('architecture', 'N/A')}")
+            print(f"  Input channels: {model_config.get('input_channels', 'N/A')} (CRITICAL: should match dataset channels)")
+            print(f"  Channels: {model_config.get('channels', 'N/A')} (CRITICAL: should be 1 for MNIST)")
+            print(f"  Latent dim: {model_config.get('latent_dim', 'N/A')}")
+            print(f"  Training algorithm: {model_config.get('training_algorithm', 'N/A')}")
+            print(f"  Generator layers: {model_config.get('generator_layers', 'N/A')}")
+            print(f"  Discriminator layers: {model_config.get('discriminator_layers', 'N/A')}")
+            
+            # Training config
+            training_config = gan_config.get('training', {})
+            print(f"\\n TRAINING CONFIG:")
+            print(f"  Epochs: {training_config.get('epochs', 'N/A')}")
+            print(f"  Batch size: {training_config.get('batch_size', 'N/A')}")
+            
+            print("=== END PARSED CONFIG ===")
+            
         except Exception as e:
-            print(f"Failed to parse JSON config: {e}")
+            print(f" Failed to parse JSON config: {e}")
             traceback.print_exc()
             sys.exit(1)
-        
-        model_config = gan_config.get('model', {})
         
         # Override model type if specified
         if args.model_name.lower() in ['dcgan', 'vanilla_gan']:
             model_config['gan_type'] = args.model_name.lower()
         
         model_type = model_config.get('gan_type', 'dcgan')
-        print(f"Building {model_type.upper()} model")
+        print(f"\\n Building {model_type.upper()} model")
+        
+        # Check for MNIST-specific issues
+        dataset_name = dataset_config.get('dataset_name', '').lower()
+        if 'mnist' in dataset_name or 'fashion' in dataset_name:
+            if dataset_config.get('channels', 3) != 1:
+                print(f"  WARNING: MNIST/FashionMNIST dataset but channels={dataset_config.get('channels', 3)} (should be 1)")
+            if model_config.get('channels', 3) != 1:
+                print(f"  WARNING: MNIST/FashionMNIST model but channels={model_config.get('channels', 3)} (should be 1)")
+            if model_config.get('input_channels', 3) != 1:
+                print(f"  WARNING: MNIST/FashionMNIST model but input_channels={model_config.get('input_channels', 3)} (should be 1)")
         
         # Import torch
         try:
             import torch
             import torch.nn as nn
-            print(f"PyTorch version: {torch.__version__}")
-            print(f"CUDA available: {torch.cuda.is_available()}")
+            print(f"\\n PyTorch version: {torch.__version__}")
+            print(f" CUDA available: {torch.cuda.is_available()}")
         except ImportError as e:
-            print(f"Failed to import torch: {e}")
+            print(f" Failed to import torch: {e}")
             sys.exit(1)
         
         model = None
@@ -86,7 +132,7 @@ implementation:
         # Load the GAN module directly from file to bypass broken package imports
         try:
             if model_type == 'dcgan':
-                print("Loading DCGAN directly from file...")
+                print("\\n Loading DCGAN directly from file...")
                 
                 # Path to the dcgan.py file
                 dcgan_path = "/usr/local/lib/python3.10/site-packages/nesy_factory/GANs/dcgan.py"
@@ -107,21 +153,31 @@ implementation:
                 DCGAN = local_namespace['DCGAN']
                 DCGANConfig = local_namespace['DCGANConfig']
                 
-                print("Successfully loaded DCGAN")
+                print(" Successfully loaded DCGAN")
                 
-                # Create DCGAN config
+                # Create DCGAN config - FIXED: Use correct channels
+                image_size = dataset_config.get('image_size', 64)
+                channels = dataset_config.get('channels', 3)
+                
                 dcgan_config_dict = {
-                    'image_size': model_config.get('image_size', 64),
-                    'channels': model_config.get('channels', 3),
+                    'image_size': image_size,
+                    'channels': channels,  # Use from dataset config
                     'latent_dim': model_config.get('latent_dim', 100),
                     'training_algorithm': model_config.get('training_algorithm', 'backprop'),
-                    'batch_size': model_config.get('batch_size', 32),
+                    'batch_size': training_config.get('batch_size', 32),
                     'learning_rate': model_config.get('learning_rate', 0.0002),
-                    'epochs': model_config.get('epochs', 50),
+                    'epochs': training_config.get('epochs', 50),
                     'device': 'cuda' if torch.cuda.is_available() else 'cpu',
                 }
                 
-                print(f"DCGAN config created")
+                print(f"\\n DCGAN CONFIG CREATED:")
+                print(f"  Image size: {image_size}")
+                print(f"  Channels: {channels} {'(Grayscale)' if channels == 1 else '(RGB)'}")
+                print(f"  Latent dim: {dcgan_config_dict['latent_dim']}")
+                print(f"  Training algorithm: {dcgan_config_dict['training_algorithm']}")
+                print(f"  Batch size: {dcgan_config_dict['batch_size']}")
+                print(f"  Device: {dcgan_config_dict['device']}")
+                
                 dcgan_config = DCGANConfig(**dcgan_config_dict)
                 model = DCGAN(dcgan_config)
                 
@@ -132,10 +188,10 @@ implementation:
                 if hasattr(model, 'discriminator'):
                     model.discriminator.__module__ = '__main__'
                 
-                print("DCGAN created and prepared for pickling")
+                print(" DCGAN created and prepared for pickling")
                 
             elif model_type == 'vanilla_gan':
-                print("Loading VanillaGAN directly from file...")
+                print("\\n Loading VanillaGAN directly from file...")
                 
                 # Path to the vanilla_gan.py file
                 vanilla_path = "/usr/local/lib/python3.10/site-packages/nesy_factory/GANs/vanilla_gan.py"
@@ -152,20 +208,30 @@ implementation:
                 VanillaGAN = local_namespace['VanillaGAN']
                 VanillaGANConfig = local_namespace['VanillaGANConfig']
                 
-                print("Successfully loaded VanillaGAN")
+                print(" Successfully loaded VanillaGAN")
                 
                 # Create VanillaGAN config
+                image_size = dataset_config.get('image_size', 28)
+                channels = dataset_config.get('channels', 1)
+                input_dim = image_size * image_size * channels
+                
                 vanilla_config_dict = {
-                    'input_dim': model_config.get('input_dim', 784),
+                    'input_dim': input_dim,
                     'latent_dim': model_config.get('latent_dim', 100),
                     'training_algorithm': model_config.get('training_algorithm', 'backprop'),
-                    'batch_size': model_config.get('batch_size', 64),
+                    'batch_size': training_config.get('batch_size', 64),
                     'lr': model_config.get('learning_rate', 0.0002),
-                    'epochs': model_config.get('epochs', 50),
+                    'epochs': training_config.get('epochs', 50),
                     'device': 'cuda' if torch.cuda.is_available() else 'cpu',
                 }
                 
-                print(f"VanillaGAN config created")
+                print(f"\\n VanillaGAN CONFIG CREATED:")
+                print(f"  Input dim: {input_dim} ({image_size}x{image_size}x{channels})")
+                print(f"  Latent dim: {vanilla_config_dict['latent_dim']}")
+                print(f"  Training algorithm: {vanilla_config_dict['training_algorithm']}")
+                print(f"  Batch size: {vanilla_config_dict['batch_size']}")
+                print(f"  Device: {vanilla_config_dict['device']}")
+                
                 vanilla_config = VanillaGANConfig(**vanilla_config_dict)
                 model = VanillaGAN(vanilla_config)
                 
@@ -176,23 +242,23 @@ implementation:
                 if hasattr(model, 'discriminator'):
                     model.discriminator.__module__ = '__main__'
                 
-                print("VanillaGAN created and prepared for pickling")
+                print(" VanillaGAN created and prepared for pickling")
                 
             else:
-                print(f"Unknown model type: {model_type}")
+                print(f" Unknown model type: {model_type}")
                 sys.exit(1)
                 
         except Exception as e:
-            print(f"Failed to create model: {e}")
+            print(f" Failed to create model: {e}")
             traceback.print_exc()
             sys.exit(1)
         
         if model is None:
-            print("Model creation failed")
+            print(" Model creation failed")
             sys.exit(1)
         
         # Test model
-        print("Testing model...")
+        print("\\n Testing model...")
         try:
             if model_type == 'dcgan':
                 z = torch.randn(2, model_config.get('latent_dim', 100), 1, 1)
@@ -202,9 +268,15 @@ implementation:
             if hasattr(model, 'generator'):
                 with torch.no_grad():
                     samples = model.generator(z)
-                print(f"Generator test passed. Output shape: {samples.shape}")
+                print(f" Generator test passed. Output shape: {samples.shape}")
+                
+                # Check if output matches expected channels
+                expected_channels = channels if model_type == 'dcgan' else 1
+                actual_channels = samples.shape[1]
+                if actual_channels != expected_channels:
+                    print(f"  WARNING: Generator output has {actual_channels} channels, expected {expected_channels}")
         except Exception as e:
-            print(f"Model test warning: {e}")
+            print(f" Model test warning: {e}")
         
         # Update master config
         gan_config['model'].update({
@@ -212,6 +284,8 @@ implementation:
             'model_class': type(model).__name__,
             'latent_dim': model_config.get('latent_dim', 100),
             'built_timestamp': time.strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'actual_channels': channels,  # Add actual channels used
+            'actual_image_size': dataset_config.get('image_size', 64),
         })
         
         gan_config['metadata'].update({
@@ -228,6 +302,8 @@ implementation:
             'build_status': 'success',
             'model_class': type(model).__name__,
             'latent_dim': model_config.get('latent_dim', 100),
+            'channels': channels,
+            'image_size': dataset_config.get('image_size', 64),
             'config': model_config,
             'pytorch_version': torch.__version__,
             'cuda_available': torch.cuda.is_available(),
@@ -235,7 +311,7 @@ implementation:
         }
         
         # Encode updated config to base64
-        updated_config_json = json.dumps(gan_config)
+        updated_config_json = json.dumps(gan_config, indent=2)
         updated_config_base64 = base64.b64encode(updated_config_json.encode('utf-8')).decode('utf-8')
         
         # Save outputs - FIX FOR PICKLING
@@ -246,9 +322,9 @@ implementation:
             # Method 1: Try regular pickle
             with open(args.model_out, 'wb') as f:
                 pickle.dump(model, f, protocol=pickle.HIGHEST_PROTOCOL)
-            print(f"Model saved using pickle: {args.model_out}")
+            print(f"\\n Model saved using pickle: {args.model_out}")
         except Exception as e:
-            print(f"Regular pickle failed, trying alternative: {e}")
+            print(f" Regular pickle failed, trying alternative: {e}")
             # Method 2: Save model state instead
             try:
                 model_state = {
@@ -260,9 +336,9 @@ implementation:
                 }
                 with open(args.model_out, 'wb') as f:
                     pickle.dump(model_state, f, protocol=pickle.HIGHEST_PROTOCOL)
-                print(f"Model state saved: {args.model_out}")
+                print(f" Model state saved: {args.model_out}")
             except Exception as e2:
-                print(f"Failed to save model: {e2}")
+                print(f" Failed to save model: {e2}")
                 # Create a simple pickle-able wrapper
                 class ModelWrapper:
                     def __init__(self, model_type, config, model_obj):
@@ -278,7 +354,7 @@ implementation:
                 )
                 with open(args.model_out, 'wb') as f:
                     pickle.dump(wrapper, f, protocol=pickle.HIGHEST_PROTOCOL)
-                print(f"Model wrapper saved: {args.model_out}")
+                print(f" Model wrapper saved: {args.model_out}")
         
         os.makedirs(os.path.dirname(args.gan_config_base64_updated) or '.', exist_ok=True)
         with open(args.gan_config_base64_updated, 'w') as f:
@@ -288,10 +364,17 @@ implementation:
         with open(args.model_info, 'w') as f:
             json.dump(model_info_data, f, indent=2)
         
+        print("\\n" + "="*60)
+        print(" GANBuildModel completed successfully")
+        print(f" Config (base64) saved: {args.gan_config_base64_updated}")
+        print(f" Model info saved: {args.model_info}")
         print("="*60)
-        print("GANBuildModel completed successfully")
-        print(f"Config (base64) saved: {args.gan_config_base64_updated}")
-        print(f"Model info saved: {args.model_info}")
+        print("\\n FINAL CONFIG SUMMARY:")
+        print(f"  Model type: {model_type}")
+        print(f"  Channels: {channels} {'(Grayscale)' if channels == 1 else '(RGB - CHECK MNIST!)'}")
+        print(f"  Image size: {dataset_config.get('image_size', 64)}")
+        print(f"  Latent dim: {model_config.get('latent_dim', 100)}")
+        print(f"  Training algorithm: {model_config.get('training_algorithm', 'backprop')}")
         print("="*60)
 
     args:
