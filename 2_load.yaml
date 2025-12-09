@@ -1,4 +1,4 @@
-name: 2 Load Dataset
+name: Load Dataset
 description: Universal dataset loader supporting CDN URLs, PyTorch datasets, HuggingFace, and local files.
 inputs:
   - name: dataset_type
@@ -39,18 +39,16 @@ implementation:
       - sh
       - -c
       - |
-        # Install torchvision if not present
+        # Try to install torchvision if not present
         echo "Checking for torchvision..."
         if ! python -c "import torchvision" &> /dev/null; then
             echo "Installing torchvision..."
-            pip install torchvision==0.15.2 --quiet
-            echo "Torchvision installed successfully"
+            pip install torchvision==0.15.2 --quiet || echo "Torchvision installation failed, continuing..."
         else
             echo "Torchvision already installed"
         fi
         
-        # Check for other dependencies
-        echo "Checking for other dependencies..."
+        # Install requests if needed
         if ! python -c "import requests" &> /dev/null; then
             echo "Installing requests..."
             pip install requests --quiet
@@ -62,7 +60,15 @@ implementation:
       - -u
       - -c
       - |
-        import sys, os, pickle, json, base64, io, zipfile, tarfile, tempfile
+        import argparse
+        import os
+        import json
+        import pickle
+        import base64
+        import io
+        import zipfile
+        import tarfile
+        import tempfile
         import numpy as np
         import torch
         from torch.utils.data import Dataset, DataLoader, random_split
@@ -77,29 +83,30 @@ implementation:
         # Enable loading of truncated images
         ImageFile.LOAD_TRUNCATED_IMAGES = True
         
+        parser = argparse.ArgumentParser(description='Universal Dataset Loader')
+        parser.add_argument('--dataset_type', type=str, required=True)
+        parser.add_argument('--dataset_path', type=str, required=True)
+        parser.add_argument('--dataset_name', type=str, required=True)
+        parser.add_argument('--config_json', type=str, required=True)
+        parser.add_argument('--train_split', type=float, required=True)
+        parser.add_argument('--shuffle_seed', type=int, required=True)
+        parser.add_argument('--train_data', type=str, required=True)
+        parser.add_argument('--test_data', type=str, required=True)
+        parser.add_argument('--dataset_info', type=str, required=True)
+        parser.add_argument('--data_config', type=str, required=True)
+        args = parser.parse_args()
+        
         print('Universal Dataset Loader Starting...')
         
-        # Parse arguments
-        dataset_type = sys.argv[1]
-        dataset_path = sys.argv[2]
-        dataset_name = sys.argv[3]
-        config_str = sys.argv[4]
-        train_split = float(sys.argv[5])
-        shuffle_seed = int(sys.argv[6])
-        train_data_path = sys.argv[7]
-        test_data_path = sys.argv[8]
-        dataset_info_path = sys.argv[9]
-        data_config_path = sys.argv[10]
-        
         print('Parameters:')
-        print('  Dataset Type: ' + dataset_type)
-        print('  Dataset Path: ' + (dataset_path[:100] + '...' if len(dataset_path) > 100 else dataset_path))
-        print('  Dataset Name: ' + dataset_name)
-        print('  Train Split: ' + str(train_split))
-        print('  Shuffle Seed: ' + str(shuffle_seed))
+        print(f'  Dataset Type: {args.dataset_type}')
+        print(f'  Dataset Path: {args.dataset_path[:100] + "..." if len(args.dataset_path) > 100 else args.dataset_path}')
+        print(f'  Dataset Name: {args.dataset_name}')
+        print(f'  Train Split: {args.train_split}')
+        print(f'  Shuffle Seed: {args.shuffle_seed}')
         
         # Parse config
-        config = json.loads(config_str) if config_str else {}
+        config = json.loads(args.config_json) if args.config_json else {}
         
         # Define base dataset class
         class BaseDataset(Dataset):
@@ -122,7 +129,7 @@ implementation:
         
         # Download from URL/CDN
         def download_from_url(url, target_dir):
-            print('Downloading from: ' + url[:100] + '...')
+            print(f'Downloading from: {url[:100]}...')
             os.makedirs(target_dir, exist_ok=True)
             
             headers = {
@@ -155,16 +162,17 @@ implementation:
                     for chunk in response.iter_content(chunk_size=8192):
                         f.write(chunk)
                 
-                print('Downloaded: ' + filename + ' (' + str(os.path.getsize(filename)/1024/1024) + ' MB)')
+                file_size_mb = os.path.getsize(filename) / 1024 / 1024
+                print(f'Downloaded: {filename} ({file_size_mb:.2f} MB)')
                 return filename
                 
             except Exception as e:
-                print('Download failed: ' + str(e))
+                print(f'Download failed: {e}')
                 return None
         
         # Extract archive
         def extract_archive(archive_path, target_dir):
-            print('Extracting: ' + archive_path)
+            print(f'Extracting: {archive_path}')
             os.makedirs(target_dir, exist_ok=True)
             
             try:
@@ -172,27 +180,27 @@ implementation:
                     with zipfile.ZipFile(archive_path, 'r') as zip_ref:
                         zip_ref.extractall(target_dir)
                         extracted = zip_ref.namelist()
-                        print('Extracted ' + str(len(extracted)) + ' files')
+                        print(f'Extracted {len(extracted)} files')
                         return target_dir
                 
                 elif archive_path.endswith(('.tar', '.tar.gz', '.tgz')):
                     with tarfile.open(archive_path, 'r:*') as tar_ref:
                         tar_ref.extractall(target_dir)
                         extracted = tar_ref.getnames()
-                        print('Extracted ' + str(len(extracted)) + ' files')
+                        print(f'Extracted {len(extracted)} files')
                         return target_dir
                 
                 else:
-                    print('Unknown archive format: ' + archive_path)
+                    print(f'Unknown archive format: {archive_path}')
                     return None
                     
             except Exception as e:
-                print('Extraction failed: ' + str(e))
+                print(f'Extraction failed: {e}')
                 return None
         
         # Load images from directory
         def load_images_from_dir(directory, max_samples=None):
-            print('Loading images from: ' + directory)
+            print(f'Loading images from: {directory}')
             supported_extensions = ('.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.webp')
             image_files = []
             
@@ -202,14 +210,14 @@ implementation:
                         full_path = os.path.join(root, file)
                         image_files.append(full_path)
             
-            print('Found ' + str(len(image_files)) + ' image files')
+            print(f'Found {len(image_files)} image files')
             
             # Limit samples if specified
             if max_samples and max_samples < len(image_files):
                 import random
                 random.shuffle(image_files)
                 image_files = image_files[:max_samples]
-                print('Limited to ' + str(max_samples) + ' samples')
+                print(f'Limited to {max_samples} samples')
             
             dataset = []
             for img_path in image_files:
@@ -230,14 +238,14 @@ implementation:
                     })
                     
                 except Exception as e:
-                    print('Failed to load image: ' + str(img_path) + ' - ' + str(e))
+                    print(f'Failed to load image: {img_path} - {e}')
                     continue
             
             return dataset
         
         # Load PyTorch vision dataset
         def load_torchvision_dataset(dataset_name, config):
-            print('Loading PyTorch dataset: ' + dataset_name)
+            print(f'Loading PyTorch dataset: {dataset_name}')
             
             try:
                 import torchvision
@@ -278,7 +286,7 @@ implementation:
                 }
                 
                 if dataset_name not in dataset_configs:
-                    print('Unsupported torchvision dataset: ' + dataset_name)
+                    print(f'Unsupported torchvision dataset: {dataset_name}')
                     return []
                 
                 # Load dataset
@@ -294,7 +302,9 @@ implementation:
                 
                 # Convert to our format
                 dataset = []
-                for idx in range(len(train_dataset)):
+                sample_limit = config.get('max_samples', len(train_dataset))
+                
+                for idx in range(min(sample_limit, len(train_dataset))):
                     img, label = train_dataset[idx]
                     
                     # Convert tensor to PIL Image, then to bytes
@@ -324,12 +334,12 @@ implementation:
                 return dataset
                 
             except Exception as e:
-                print('Failed to load torchvision dataset: ' + str(e))
+                print(f'Failed to load torchvision dataset: {e}')
                 return []
         
         # Load HuggingFace dataset
         def load_huggingface_dataset(dataset_name, config):
-            print('Loading HuggingFace dataset: ' + dataset_name)
+            print(f'Loading HuggingFace dataset: {dataset_name}')
             
             try:
                 from datasets import load_dataset
@@ -350,9 +360,13 @@ implementation:
                 
                 dataset = []
                 data_subset = hf_dataset[split]
+                sample_limit = config.get('max_samples', len(data_subset))
                 
                 # Convert samples
                 for idx, sample in enumerate(data_subset):
+                    if idx >= sample_limit:
+                        break
+                        
                     try:
                         # Handle different HuggingFace dataset formats
                         if 'image' in sample:
@@ -378,42 +392,42 @@ implementation:
                         })
                         
                     except Exception as e:
-                        print('Failed to process sample ' + str(idx) + ': ' + str(e))
+                        print(f'Failed to process sample {idx}: {e}')
                         continue
                 
                 return dataset
                 
             except Exception as e:
-                print('Failed to load HuggingFace dataset: ' + str(e))
+                print(f'Failed to load HuggingFace dataset: {e}')
                 return []
         
         # Main loading logic
         loaded_dataset = []
         
-        if dataset_type == 'cdn_url' or dataset_type == 'custom_url':
+        if args.dataset_type == 'cdn_url' or args.dataset_type == 'custom_url':
             # Download from URL
             with tempfile.TemporaryDirectory() as temp_dir:
-                archive_path = download_from_url(dataset_path, temp_dir)
+                archive_path = download_from_url(args.dataset_path, temp_dir)
                 if archive_path:
                     extract_dir = os.path.join(temp_dir, 'extracted')
                     extracted_path = extract_archive(archive_path, extract_dir)
                     if extracted_path:
-                        loaded_dataset = load_images_from_dir(extracted_path)
+                        loaded_dataset = load_images_from_dir(extracted_path, config.get('max_samples'))
         
-        elif dataset_type == 'local_dir':
+        elif args.dataset_type == 'local_dir':
             # Load from local directory
-            loaded_dataset = load_images_from_dir(dataset_path)
+            loaded_dataset = load_images_from_dir(args.dataset_path, config.get('max_samples'))
         
-        elif dataset_type == 'torchvision':
+        elif args.dataset_type == 'torchvision':
             # Load PyTorch dataset
-            loaded_dataset = load_torchvision_dataset(dataset_name, config)
+            loaded_dataset = load_torchvision_dataset(args.dataset_name, config)
         
-        elif dataset_type == 'huggingface':
+        elif args.dataset_type == 'huggingface':
             # Load HuggingFace dataset
-            loaded_dataset = load_huggingface_dataset(dataset_name, config)
+            loaded_dataset = load_huggingface_dataset(args.dataset_name, config)
         
         else:
-            print('Unknown dataset type: ' + dataset_type)
+            print(f'Unknown dataset type: {args.dataset_type}')
             loaded_dataset = []
         
         # Check if we got data
@@ -421,7 +435,7 @@ implementation:
             print('No data loaded. Creating empty dataset.')
             loaded_dataset = [{'image_data': '', 'label': 'none', 'error': 'no_data'}]
         
-        print('Loaded ' + str(len(loaded_dataset)) + ' samples')
+        print(f'Loaded {len(loaded_dataset)} samples')
         
         # Create dataset info
         labels = [item.get('label', 'unknown') for item in loaded_dataset]
@@ -435,24 +449,24 @@ implementation:
             'class_distribution': dict(label_distribution),
             'label_to_idx': label_to_idx,
             'output_dim': len(unique_labels),
-            'train_split_ratio': train_split,
-            'shuffle_seed': shuffle_seed,
-            'dataset_type': dataset_type,
-            'dataset_name': dataset_name,
-            'original_path': dataset_path
+            'train_split_ratio': args.train_split,
+            'shuffle_seed': args.shuffle_seed,
+            'dataset_type': args.dataset_type,
+            'dataset_name': args.dataset_name,
+            'original_path': args.dataset_path
         }
         
-        print('Dataset: ' + str(len(loaded_dataset)) + ' samples, ' + str(len(unique_labels)) + ' classes')
+        print(f'Dataset: {len(loaded_dataset)} samples, {len(unique_labels)} classes')
         
         # Split data
-        train_size = int(train_split * len(loaded_dataset))
+        train_size = int(args.train_split * len(loaded_dataset))
         test_size = len(loaded_dataset) - train_size
         
         if train_size > 0 and test_size > 0:
             train_indices, test_indices = random_split(
                 range(len(loaded_dataset)), 
                 [train_size, test_size],
-                generator=torch.Generator().manual_seed(shuffle_seed)
+                generator=torch.Generator().manual_seed(args.shuffle_seed)
             )
             
             train_data = [loaded_dataset[i] for i in train_indices]
@@ -463,22 +477,22 @@ implementation:
             test_data = []
         
         # Save outputs
-        os.makedirs(os.path.dirname(train_data_path) or '.', exist_ok=True)
-        with open(train_data_path, 'wb') as f:
+        os.makedirs(os.path.dirname(args.train_data) or '.', exist_ok=True)
+        with open(args.train_data, 'wb') as f:
             pickle.dump(train_data, f)
         
-        os.makedirs(os.path.dirname(test_data_path) or '.', exist_ok=True)
-        with open(test_data_path, 'wb') as f:
+        os.makedirs(os.path.dirname(args.test_data) or '.', exist_ok=True)
+        with open(args.test_data, 'wb') as f:
             pickle.dump(test_data, f)
         
-        os.makedirs(os.path.dirname(dataset_info_path) or '.', exist_ok=True)
-        with open(dataset_info_path, 'wb') as f:
+        os.makedirs(os.path.dirname(args.dataset_info) or '.', exist_ok=True)
+        with open(args.dataset_info, 'wb') as f:
             pickle.dump(dataset_info, f)
         
         # Create data configuration for next steps
         data_config = {
-            'dataset_type': dataset_type,
-            'dataset_name': dataset_name,
+            'dataset_type': args.dataset_type,
+            'dataset_name': args.dataset_name,
             'num_classes': len(unique_labels),
             'image_size': config.get('image_size', 224),
             'channels': config.get('channels', 3),
@@ -487,23 +501,33 @@ implementation:
             'sample_count': len(loaded_dataset)
         }
         
-        os.makedirs(os.path.dirname(data_config_path) or '.', exist_ok=True)
-        with open(data_config_path, 'w') as f:
+        os.makedirs(os.path.dirname(args.data_config) or '.', exist_ok=True)
+        with open(args.data_config, 'w') as f:
             json.dump(data_config, f, indent=2)
         
         print('Dataset loading complete!')
-        print('Train samples: ' + str(len(train_data)))
-        print('Test samples: ' + str(len(test_data)))
-        print('Classes: ' + str(unique_labels))
+        print(f'Train samples: {len(train_data)}')
+        print(f'Test samples: {len(test_data)}')
+        print(f'Classes: {unique_labels}')
 
     args:
+      - --dataset_type
       - {inputValue: dataset_type}
+      - --dataset_path
       - {inputValue: dataset_path}
+      - --dataset_name
       - {inputValue: dataset_name}
+      - --config_json
       - {inputValue: config_json}
+      - --train_split
       - {inputValue: train_split}
+      - --shuffle_seed
       - {inputValue: shuffle_seed}
+      - --train_data
       - {outputPath: train_data}
+      - --test_data
       - {outputPath: test_data}
+      - --dataset_info
       - {outputPath: dataset_info}
+      - --data_config
       - {outputPath: data_config}
