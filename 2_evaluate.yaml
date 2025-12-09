@@ -1,4 +1,4 @@
-name: 2 Evaluate
+name: Evaluate
 description: Evaluates GAN model using master config
 inputs:
   - name: trained_model
@@ -321,6 +321,13 @@ implementation:
 
         Evaluation completed in {eval_metrics_data['evaluation_time_seconds']:.2f} seconds
         '''
+        
+        # PRINT THE EVALUATION REPORT TO CONSOLE
+        print("\\n" + "="*60)
+        print("EVALUATION REPORT")
+        print("="*60)
+        print(evaluation_report)
+        print("="*60 + "\\n")
 
         # Save outputs
         os.makedirs(os.path.dirname(args.eval_metrics), exist_ok=True)
