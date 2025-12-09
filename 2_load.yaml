@@ -1,4 +1,4 @@
-name: 2 Load Dataset
+name: Load Dataset
 description: Universal dataset loader supporting CDN URLs, PyTorch datasets, HuggingFace, and local files.
 inputs:
   - name: dataset_type
@@ -34,7 +34,7 @@ outputs:
 
 implementation:
   container:
-    image: gurpreetgandhi/nesy-factory:v33
+    image: gurpreetgandhi/nesy-factory:v35
     command:
       - sh
       - -c
