@@ -1,4 +1,4 @@
-name: Load Dataset
+name: 2 Load Dataset
 description: Universal dataset loader supporting CDN URLs, PyTorch datasets, HuggingFace, and local files.
 inputs:
   - name: dataset_type
@@ -39,20 +39,31 @@ implementation:
       - sh
       - -c
       - |
-        # Try to install torchvision if not present
-        echo "Checking for torchvision..."
-        if ! python -c "import torchvision" &> /dev/null; then
-            echo "Installing torchvision..."
-            pip install torchvision==0.15.2 --quiet || echo "Torchvision installation failed, continuing..."
-        else
-            echo "Torchvision already installed"
-        fi
+        set -e  # Exit on any error
         
-        # Install requests if needed
-        if ! python -c "import requests" &> /dev/null; then
-            echo "Installing requests..."
-            pip install requests --quiet
-        fi
+        echo "Updating package lists..."
+        apt-get update
+        
+        echo "Installing system dependencies for torchvision..."
+        apt-get install -y libjpeg-dev zlib1g-dev libpng-dev
+        
+        echo "Checking Python environment..."
+        python --version
+        pip --version
+        
+        echo "Installing torchvision..."
+        # Try multiple installation methods
+        pip install torchvision==0.15.2 --no-cache-dir || \
+        pip install torchvision --no-cache-dir || \
+        { echo "Torchvision installation failed, trying with --index-url..." && \
+          pip install torchvision==0.15.2 --index-url https://download.pytorch.org/whl/cpu --no-cache-dir; }
+        
+        echo "Installing requests if needed..."
+        pip install requests --no-cache-dir
+        
+        echo "Verifying installations..."
+        python -c "import torchvision; print(f'Torchvision version: {torchvision.__version__}')"
+        python -c "import requests; print('Requests installed successfully')"
         
         echo "Starting dataset loader..."
         exec "$0" "$@"
@@ -335,6 +346,8 @@ implementation:
                 
             except Exception as e:
                 print(f'Failed to load torchvision dataset: {e}')
+                import traceback
+                traceback.print_exc()
                 return []
         
         # Load HuggingFace dataset
