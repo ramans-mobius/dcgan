@@ -1,4 +1,4 @@
-name: Load Dataset
+name: 2 Load Dataset
 description: Universal dataset loader supporting CDN URLs, PyTorch datasets, HuggingFace, and local files.
 inputs:
   - name: dataset_type
@@ -31,6 +31,7 @@ outputs:
   - name: data_config
     type: String
     description: "Data configuration for next steps"
+
 implementation:
   container:
     image: gurpreetgandhi/nesy-factory:v33
@@ -38,7 +39,29 @@ implementation:
       - sh
       - -c
       - |
-        python -c "
+        # Install torchvision if not present
+        echo "Checking for torchvision..."
+        if ! python -c "import torchvision" &> /dev/null; then
+            echo "Installing torchvision..."
+            pip install torchvision==0.15.2 --quiet
+            echo "Torchvision installed successfully"
+        else
+            echo "Torchvision already installed"
+        fi
+        
+        # Check for other dependencies
+        echo "Checking for other dependencies..."
+        if ! python -c "import requests" &> /dev/null; then
+            echo "Installing requests..."
+            pip install requests --quiet
+        fi
+        
+        echo "Starting dataset loader..."
+        exec "$0" "$@"
+      - python3
+      - -u
+      - -c
+      - |
         import sys, os, pickle, json, base64, io, zipfile, tarfile, tempfile
         import numpy as np
         import torch
@@ -472,7 +495,7 @@ implementation:
         print('Train samples: ' + str(len(train_data)))
         print('Test samples: ' + str(len(test_data)))
         print('Classes: ' + str(unique_labels))
-        " "$0" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"
+
     args:
       - {inputValue: dataset_type}
       - {inputValue: dataset_path}
