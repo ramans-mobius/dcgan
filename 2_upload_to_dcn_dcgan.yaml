@@ -56,7 +56,7 @@ implementation:
         
         # Install Python packages
         echo "Installing Python packages..."
-        pip install Pillow > /dev/null
+        pip install Pillow numpy > /dev/null
         
         echo "Starting the Python script..."
         exec "$0" "$@"
@@ -66,6 +66,7 @@ implementation:
       - |
         import sys, os, subprocess, json, pickle, tempfile, time, argparse, base64, io
         from PIL import Image
+        import numpy as np
         
         parser = argparse.ArgumentParser()
         parser.add_argument('--training_history_path', type=str, required=True)
@@ -128,6 +129,32 @@ implementation:
         except Exception as e:
             print(f"Error loading generated_images: {e}")
             generated_images = []
+        
+        # Check first image format for debugging
+        if generated_images:
+            print(f"\\n=== Analyzing first image format ===")
+            sample = generated_images[0]
+            if isinstance(sample, dict):
+                print(f"Image is a dictionary with keys: {list(sample.keys())}")
+                if 'image_data' in sample:
+                    img_bytes = base64.b64decode(sample['image_data'])
+                    print(f"  Base64 decoded to {len(img_bytes)} bytes")
+                    
+                    # Check if it's a PNG file
+                    if len(img_bytes) >= 8 and img_bytes[:8] == b'\x89PNG\r\n\x1a\n':
+                        print("  Format: PNG file")
+                    else:
+                        print("  Format: Not a PNG file, likely raw image data")
+                        
+                    # Try to load as PIL image
+                    try:
+                        img = Image.open(io.BytesIO(img_bytes))
+                        print(f"  Successfully loaded as PIL Image: mode={img.mode}, size={img.size}")
+                    except:
+                        print("  Could not load as PIL Image")
+            else:
+                print(f"Image is type: {type(sample)}")
+            print("===================================\\n")
         
         bearer_token = args.bearer_token.strip()
         
@@ -198,35 +225,135 @@ implementation:
             metrics_url = upload_file_to_cdn(metrics_file_path, f'training_metrics_{timestamp}.json')
             
             # 3. Upload generated images
-            print(f"Processing {len(generated_images)} generated images...")
+            print(f"\\nProcessing {len(generated_images)} generated images...")
             
             for i, image_data in enumerate(generated_images):
                 try:
-                    # Extract image data from the sample dict
+                    # Extract image data
                     if isinstance(image_data, dict) and 'image_data' in image_data:
                         img_base64 = image_data['image_data']
                         
                         # Decode base64
                         img_bytes = base64.b64decode(img_base64)
+                        
+                        # Determine the image type and save appropriately
                         image_filename = f'generated_image_{timestamp}_{i+1}.png'
                         image_file_path = os.path.join(temp_dir, image_filename)
                         
-                        # Save image
-                        with open(image_file_path, 'wb') as f:
-                            f.write(img_bytes)
+                        # Try to detect and handle the image format
+                        try:
+                            # Try to open as PIL Image first (if it's already a PNG)
+                            img = Image.open(io.BytesIO(img_bytes))
+                            
+                            # Convert to appropriate mode if needed
+                            original_mode = img.mode
+                            print(f"  Image {i+1}: PIL Image detected - mode={original_mode}, size={img.size}")
+                            
+                            # Handle different image modes
+                            if img.mode == 'L':  # Grayscale
+                                # Keep as grayscale
+                                print(f"    -> Saving as grayscale PNG")
+                            elif img.mode in ['RGB', 'RGBA']:  # Color
+                                print(f"    -> Saving as {'RGB' if img.mode == 'RGB' else 'RGBA'} PNG")
+                            elif img.mode == 'P':  # Palette mode
+                                img = img.convert('RGB')
+                                print(f"    -> Converted from palette to RGB")
+                            elif img.mode == '1':  # Binary
+                                img = img.convert('L')
+                                print(f"    -> Converted from binary to grayscale")
+                            else:
+                                # Convert to RGB for other modes
+                                img = img.convert('RGB')
+                                print(f"    -> Converted to RGB from {original_mode}")
+                            
+                            # Save the image
+                            img.save(image_file_path, 'PNG')
+                            
+                        except Exception as pil_error:
+                            # If not a PIL image, check if it's raw numpy/tensor data
+                            print(f"  Image {i+1}: Not a PIL image, checking for raw data...")
+                            
+                            # Try to load as numpy array
+                            try:
+                                # Attempt to load as pickle or numpy array
+                                import pickle as pkl
+                                img_array = pkl.loads(img_bytes)
+                                
+                                if isinstance(img_array, np.ndarray):
+                                    print(f"    -> NumPy array detected: shape={img_array.shape}, dtype={img_array.dtype}")
+                                    
+                                    # Handle different array shapes
+                                    if len(img_array.shape) == 2:
+                                        # Grayscale image (H, W)
+                                        img = Image.fromarray(img_array.astype(np.uint8), mode='L')
+                                        print(f"    -> Converting 2D array to grayscale")
+                                    elif len(img_array.shape) == 3:
+                                        # Color image (C, H, W) or (H, W, C)
+                                        if img_array.shape[0] == 3 or img_array.shape[0] == 1:
+                                            # (C, H, W) format - transpose to (H, W, C)
+                                            img_array = np.transpose(img_array, (1, 2, 0))
+                                            print(f"    -> Transposed from (C,H,W) to (H,W,C)")
+                                        
+                                        if img_array.shape[2] == 1:
+                                            # Grayscale with channel dimension
+                                            img_array = img_array.squeeze(2)
+                                            img = Image.fromarray(img_array.astype(np.uint8), mode='L')
+                                            print(f"    -> Converted to grayscale (1 channel)")
+                                        elif img_array.shape[2] == 3:
+                                            # RGB
+                                            img = Image.fromarray(img_array.astype(np.uint8), mode='RGB')
+                                            print(f"    -> Converted to RGB (3 channels)")
+                                        elif img_array.shape[2] == 4:
+                                            # RGBA
+                                            img = Image.fromarray(img_array.astype(np.uint8), mode='RGBA')
+                                            print(f"    -> Converted to RGBA (4 channels)")
+                                        else:
+                                            print(f"    -> Unsupported shape: {img_array.shape}")
+                                            raise ValueError(f"Unsupported array shape: {img_array.shape}")
+                                    else:
+                                        print(f"    -> Unsupported array dimensions: {len(img_array.shape)}")
+                                        raise ValueError(f"Unsupported array dimensions: {len(img_array.shape)}")
+                                    
+                                    # Save the image
+                                    img.save(image_file_path, 'PNG')
+                                else:
+                                    print(f"    -> Unknown data type: {type(img_array)}")
+                                    raise ValueError(f"Unknown data type: {type(img_array)}")
+                                    
+                            except Exception as np_error:
+                                # If all else fails, save raw bytes
+                                print(f"    -> Could not parse as numpy, saving raw bytes")
+                                with open(image_file_path, 'wb') as f:
+                                    f.write(img_bytes)
                         
-                        # Upload image
+                        # Upload the image
                         img_url = upload_file_to_cdn(image_file_path, image_filename)
                         if img_url:
+                            # Determine image type for metadata
+                            img_type = "unknown"
+                            try:
+                                img_check = Image.open(image_file_path)
+                                if img_check.mode == 'L':
+                                    img_type = "grayscale"
+                                elif img_check.mode in ['RGB', 'RGBA']:
+                                    img_type = "color"
+                                else:
+                                    img_type = img_check.mode
+                            except:
+                                pass
+                            
                             image_urls.append({
                                 'index': i+1,
                                 'filename': image_filename,
+                                'type': img_type,
                                 'url': img_url
                             })
-                            print(f"Uploaded image {i+1}/{len(generated_images)}")
-                        
+                            print(f"Successfully uploaded image {i+1}/{len(generated_images)}")
+                            
                 except Exception as e:
                     print(f"Error processing image {i+1}: {e}")
+                    import traceback
+                    traceback.print_exc()
                     continue
         
         # Create upload summary
@@ -239,6 +366,11 @@ implementation:
             'metrics_url': metrics_url if metrics_url else '',
             'images_uploaded': len(image_urls),
             'images_total': len(generated_images),
+            'image_types': {
+                'grayscale': len([img for img in image_urls if img.get('type') == 'grayscale']),
+                'color': len([img for img in image_urls if img.get('type') == 'color']),
+                'other': len([img for img in image_urls if img.get('type') not in ['grayscale', 'color']])
+            },
             'image_urls': image_urls,
             'summary': {
                 'total_files': 2 + len(image_urls),
@@ -268,6 +400,9 @@ implementation:
         print(f'  Training history uploaded: {"Yes" if history_url else "No"}')
         print(f'  Training metrics uploaded: {"Yes" if metrics_url else "No"}')
         print(f'  Images uploaded: {len(image_urls)}/{len(generated_images)}')
+        print(f'  Grayscale images: {upload_summary["image_types"]["grayscale"]}')
+        print(f'  Color images: {upload_summary["image_types"]["color"]}')
+        print(f'  Other types: {upload_summary["image_types"]["other"]}')
         print('====================================')
 
     args:
