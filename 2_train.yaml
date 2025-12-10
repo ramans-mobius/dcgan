@@ -77,7 +77,6 @@ implementation:
         # =============================================================================
         
         class GANDataset(Dataset):
-            """Same dataset class as in Preprocess brick"""
             def __init__(self, data_list, transform=None, model_type='dcgan', target_size=64, channels=3):
                 self.data_list = data_list
                 self.transform = transform
