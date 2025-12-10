@@ -273,7 +273,6 @@ implementation:
         
         # Create DataLoader with proper collate function
         def collate_fn(batch):
-            """Handle both tensor and PIL image batches"""
             if isinstance(batch[0], torch.Tensor):
                 images = torch.stack(batch)
                 # Flatten for VanillaGAN
