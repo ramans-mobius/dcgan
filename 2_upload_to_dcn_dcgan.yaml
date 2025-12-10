@@ -1,4 +1,4 @@
-name: Upload GAN Results to CDN
+name: 2 Upload GAN Results to CDN
 description: Uploads training history, generated images, and metrics to CDN.
 inputs:
   - name: training_history
@@ -140,8 +140,15 @@ implementation:
                     img_bytes = base64.b64decode(sample['image_data'])
                     print(f"  Base64 decoded to {len(img_bytes)} bytes")
                     
-                    # Check if it's a PNG file
-                    if len(img_bytes) >= 8 and img_bytes[:8] == b'\x89PNG\r\n\x1a\n':
+                    # Check if it's a PNG file using hex values to avoid \x89 in YAML
+                    def is_png_header(data):
+                        return (len(data) >= 8 and 
+                                data[0] == 0x89 and  # Hex value for \x89
+                                data[1:4] == b'PNG' and
+                                data[4] == 0x0D and data[5] == 0x0A and  
+                                data[6] == 0x1A and data[7] == 0x0A)     
+                    
+                    if is_png_header(img_bytes):
                         print("  Format: PNG file")
                     else:
                         print("  Format: Not a PNG file, likely raw image data")
