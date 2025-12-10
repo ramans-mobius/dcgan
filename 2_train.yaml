@@ -1,4 +1,4 @@
-name: 2 Train
+name: Train
 description: Trains GAN model using master config with support for Backprop, Forward-Forward, and CAFO algorithms
 inputs:
   - name: initialized_model
@@ -43,46 +43,32 @@ implementation:
         import time
         import torch
         import torch.nn as nn
-        import torch.nn.functional as F
         from torch.utils.data import Dataset, DataLoader
         import numpy as np
         from PIL import Image
         import io
         
         # =============================================================================
-        # DEFINE GANDataset CLASS HERE (SAME AS PREPROCESS BRICK)
+        # IMPORT GAN MODULES
         # =============================================================================
         
-        class GANDataset(Dataset):
-           
-            def __init__(self, data_list, transform=None, model_type='dcgan', target_size=64, channels=3):
-                self.data_list = data_list
-                self.transform = transform
-                self.model_type = model_type
-                self.target_size = target_size
-                self.channels = channels
-            
-            def __len__(self):
-                return len(self.data_list)
-            
-            def __getitem__(self, idx):
-                item = self.data_list[idx]
-                try:
-                    img_data = base64.b64decode(item['image_data'])
-                    img = Image.open(io.BytesIO(img_data))
-                    
-                    if self.channels == 1 and img.mode != 'L':
-                        img = img.convert('L')
-                    elif self.channels == 3 and img.mode != 'RGB':
-                        img = img.convert('RGB')
-                    
-                    if self.transform:
-                        img = self.transform(img)
-                    
-                    return img
-                except Exception as e:
-                    print(f"Error processing image {idx}: {e}")
-                    return torch.zeros(self.channels, self.target_size, self.target_size)
+        print("╔════════════════════════════════════════════════════════════════════════════╗")
+        print("║                         GAN TRAINING COMPONENT                            ║")
+        print("╚════════════════════════════════════════════════════════════════════════════╝")
+        
+        try:
+            from nesy_factory.GANs.dcgan import DCGANConfig, DCGAN
+            print("[INFO]  Successfully imported DCGAN module")
+        except ImportError as e:
+            print(f"[ERROR]  DCGAN import failed: {e}")
+            sys.exit(1)
+        
+        try:
+            from nesy_factory.GANs.vanilla_gan import VanillaGANConfig, VanillaGAN
+            print("[INFO]  Successfully imported VanillaGAN module")
+        except ImportError as e:
+            print(f"[ERROR]  VanillaGAN import failed: {e}")
+            sys.exit(1)
         
         # =============================================================================
         # MAIN TRAINING LOGIC
@@ -98,87 +84,221 @@ implementation:
         parser.add_argument('--generated_samples', type=str, required=True)
         args = parser.parse_args()
         
-        print("GAN TRAINING STARTING")
-        print("="*60)
+        print("")
+        print("╔════════════════════════════════════════════════════════════════════════════╗")
+        print("║                       GAN TRAINING STARTING                               ║")
+        print("╚════════════════════════════════════════════════════════════════════════════╝")
         
-        # Parse configuration
+        print(f"[INFO] Command line arguments received:")
+        print(f"  • initialized_model: {args.initialized_model}")
+        print(f"  • preprocessed_data: {args.preprocessed_data}")
+        print(f"  • gan_config_json: {len(args.gan_config_json)} characters")
+        print(f"  • trained_model: {args.trained_model}")
+        print(f"  • training_history: {args.training_history}")
+        print(f"  • training_metrics: {args.training_metrics}")
+        print(f"  • generated_samples: {args.generated_samples}")
+        
+        # =============================================================================
+        # PARSE CONFIGURATION
+        # =============================================================================
+        
+        print("")
+        print("┌────────────────────────────────────────────────────────────────────────────┐")
+        print("│ STEP 1: Parsing GAN Configuration                                         │")
+        print("└────────────────────────────────────────────────────────────────────────────┘")
+        
         gan_config = json.loads(args.gan_config_json)
-        model_config = gan_config.get('model', {})
-        training_config = gan_config.get('training', {})
+        model_config = gan_config['model']
+        training_config = gan_config['training']
         
-        # Get algorithm
-        algorithm = model_config.get('training_algorithm', 'backprop')
-        gan_type = model_config.get('gan_type', 'dcgan')
-        print(f"Training {gan_type.upper()} with {algorithm.upper()} algorithm")
+        algorithm = model_config['training_algorithm']
+        gan_type = model_config['gan_type']
         
-        # Load preprocessed data
+        print(f"[CONFIG] Model Type: {gan_type.upper()}")
+        print(f"[CONFIG] Training Algorithm: {algorithm.upper()}")
+        print(f"[CONFIG] Latent Dimension: {model_config['latent_dim']}")
+        print(f"[CONFIG] Epochs: {training_config['epochs']}")
+        print(f"[CONFIG] Batch Size: {training_config['batch_size']}")
+        
+        # =============================================================================
+        # LOAD PREPROCESSED DATA
+        # =============================================================================
+        
+        print("")
+        print("┌────────────────────────────────────────────────────────────────────────────┐")
+        print("│ STEP 2: Loading Preprocessed Dataset                                      │")
+        print("└────────────────────────────────────────────────────────────────────────────┘")
+        
+        start_time = time.time()
         with open(args.preprocessed_data, 'rb') as f:
             data_wrapper = pickle.load(f)
+        load_time = time.time() - start_time
         
-        # Check what format the data is in
-        print(f"Data wrapper type: {type(data_wrapper)}")
+        print(f"[DATA] Data loaded in {load_time:.2f} seconds")
+        print(f"[DATA] Data wrapper type: {type(data_wrapper)}")
         
-        # Handle different data formats
         if isinstance(data_wrapper, dict) and 'dataset' in data_wrapper:
-            # New format from Preprocess brick
             dataset = data_wrapper['dataset']
-            model_type = data_wrapper.get('model_type', gan_type)
-            print(f"Using dataset from data wrapper: {len(dataset)} samples")
-        elif hasattr(data_wrapper, '__len__'):
-            # Direct dataset
-            dataset = data_wrapper
-            print(f"Using direct dataset: {len(dataset)} samples")
+            wrapper_model_type = data_wrapper['model_type']
+            image_size = data_wrapper['image_size']
+            channels = data_wrapper['channels']
+            input_dim = data_wrapper['input_dim']
+            
+            print(f"[DATA]  Dataset loaded successfully:")
+            print(f"  • Samples: {len(dataset):,}")
+            print(f"  • Model Type: {wrapper_model_type}")
+            print(f"  • Image Size: {image_size}x{image_size}")
+            print(f"  • Channels: {channels}")
+            print(f"  • Input Dimension: {input_dim}")
+            
+            if gan_type != wrapper_model_type:
+                print(f"[WARNING]  Config gan_type ({gan_type}) differs from wrapper model_type ({wrapper_model_type})")
+                print(f"[WARNING]  Using wrapper model_type: {wrapper_model_type}")
+                gan_type = wrapper_model_type
         else:
-            raise ValueError(f"Unknown data format: {type(data_wrapper)}")
+            print(f"[ERROR]  Invalid data format: {type(data_wrapper)}")
+            raise ValueError(f"Invalid data format: {type(data_wrapper)}")
         
-        # Create dataloader
-        batch_size = training_config.get('batch_size', 32)
+        # =============================================================================
+        # CREATE DATALOADER
+        # =============================================================================
+        
+        print("")
+        print("┌────────────────────────────────────────────────────────────────────────────┐")
+        print("│ STEP 3: Creating DataLoader                                              │")
+        print("└────────────────────────────────────────────────────────────────────────────┘")
+        
+        batch_size = training_config['batch_size']
+        
+        def collate_fn(batch):
+            if isinstance(batch[0], torch.Tensor):
+                images = torch.stack(batch)
+                if gan_type in ['vanilla_gan', 'vanilla']:
+                    images = images.view(images.size(0), -1)
+                return images
+            else:
+                raise ValueError(f"Unsupported batch type: {type(batch[0])}")
+        
         dataloader = DataLoader(
             dataset, 
             batch_size=batch_size, 
             shuffle=True,
+            collate_fn=collate_fn,
             num_workers=0
         )
         
-        # Load model - handle different model formats
-        try:
-            with open(args.initialized_model, 'rb') as f:
-                gan = pickle.load(f)
+        print(f"[DATA]  DataLoader created:")
+        print(f"  • Batch Size: {batch_size}")
+        print(f"  • Total Batches: {len(dataloader):,}")
+        print(f"  • Samples per Batch: ~{len(dataset) // len(dataloader)}")
+        
+        # =============================================================================
+        # LOAD AND RECONSTRUCT MODEL
+        # =============================================================================
+        
+        print("")
+        print("┌────────────────────────────────────────────────────────────────────────────┐")
+        print("│ STEP 4: Loading and Reconstructing Model                                 │")
+        print("└────────────────────────────────────────────────────────────────────────────┘")
+        
+        start_time = time.time()
+        with open(args.initialized_model, 'rb') as f:
+            loaded_data = pickle.load(f)
+        load_time = time.time() - start_time
+        
+        print(f"[MODEL] Model loaded in {load_time:.2f} seconds")
+        print(f"[MODEL] Loaded data type: {type(loaded_data)}")
+        
+        if isinstance(loaded_data, dict):
+            print("[MODEL]  Reconstructing model from state dictionary...")
+            model_type = loaded_data['model_type']
+            config_dict = loaded_data['config']
             
-            # Check model type
-            print(f"Model loaded: {type(gan).__name__}")
+            print(f"[MODEL] Model Type from state: {model_type}")
+            print(f"[MODEL] Config keys: {list(config_dict.keys())}")
             
-            # Handle model wrapper if needed
-            if hasattr(gan, 'model_obj') and gan.model_obj is None:
-                print("Warning: Model wrapper with no actual model")
-                # You might need to recreate the model here
-                raise ValueError("Model wrapper without actual model")
+            if model_type == 'dcgan':
+                print("[MODEL] Creating DCGAN configuration...")
+                config = DCGANConfig(**config_dict)
+                print("[MODEL] Instantiating DCGAN model...")
+                gan = DCGAN(config)
                 
-        except Exception as e:
-            print(f"Error loading model: {e}")
-            print("Attempting alternative load method...")
+                if loaded_data['generator_state'] is not None:
+                    print("[MODEL] Loading generator state dict...")
+                    gan.generator.load_state_dict(loaded_data['generator_state'])
+                    print("[MODEL]  Generator state loaded")
+                if loaded_data['discriminator_state'] is not None:
+                    print("[MODEL] Loading discriminator state dict...")
+                    gan.discriminator.load_state_dict(loaded_data['discriminator_state'])
+                    print("[MODEL]  Discriminator state loaded")
+                    
+            elif model_type in ['vanilla_gan', 'vanilla']:
+                print("[MODEL] Creating VanillaGAN configuration...")
+                config = VanillaGANConfig(**config_dict)
+                print("[MODEL] Instantiating VanillaGAN model...")
+                gan = VanillaGAN(config)
+                
+                if loaded_data['generator_state'] is not None:
+                    print("[MODEL] Loading generator state dict...")
+                    gan.generator.load_state_dict(loaded_data['generator_state'])
+                    print("[MODEL]  Generator state loaded")
+                if loaded_data['discriminator_state'] is not None:
+                    print("[MODEL] Loading discriminator state dict...")
+                    gan.discriminator.load_state_dict(loaded_data['discriminator_state'])
+                    print("[MODEL]  Discriminator state loaded")
+            else:
+                raise ValueError(f"[ERROR]  Unknown model type: {model_type}")
             
-            # Try alternative load
-            try:
-                import torch
-                gan = torch.load(args.initialized_model)
-                print(f"Model loaded via torch.load: {type(gan).__name__}")
-            except Exception as e2:
-                print(f"Alternative load also failed: {e2}")
-                raise
+            print(f"[MODEL]  Successfully reconstructed {model_type} from state dictionary")
+        else:
+            gan = loaded_data
+            print(f"[MODEL]  Direct model loaded: {type(gan).__name__}")
         
-        # Ensure model is on correct device
+        # =============================================================================
+        # SETUP DEVICE AND MODEL
+        # =============================================================================
+        
+        print("")
+        print("┌────────────────────────────────────────────────────────────────────────────┐")
+        print("│ STEP 5: Device Setup and Model Preparation                               │")
+        print("└────────────────────────────────────────────────────────────────────────────┘")
+        
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        print(f"Using device: {device}")
+        print(f"[DEVICE] Using device: {device}")
+        print(f"[DEVICE] CUDA Available: {torch.cuda.is_available()}")
+        if torch.cuda.is_available():
+            print(f"[DEVICE] CUDA Device Count: {torch.cuda.device_count()}")
+            print(f"[DEVICE] CUDA Device Name: {torch.cuda.get_device_name(0)}")
         
-        # Move model to device if it has generator/discriminator
         if hasattr(gan, 'generator'):
             gan.generator.to(device)
+            print("[MODEL]  Generator moved to device")
+            
+            # Print generator info
+            print(f"[MODEL] Generator Parameters: {sum(p.numel() for p in gan.generator.parameters()):,}")
+            print(f"[MODEL] Generator Layers: {len(list(gan.generator.modules()))}")
+        
         if hasattr(gan, 'discriminator'):
             gan.discriminator.to(device)
+            print("[MODEL]  Discriminator moved to device")
+            
+            # Print discriminator info
+            print(f"[MODEL] Discriminator Parameters: {sum(p.numel() for p in gan.discriminator.parameters()):,}")
+            print(f"[MODEL] Discriminator Layers: {len(list(gan.discriminator.modules()))}")
         
-        # TRAINING LOGIC WITH ALGORITHM SUPPORT
-        print(f"\\nStarting {algorithm.upper()} training...")
+        if hasattr(gan, 'trainer'):
+            print("[MODEL]  Trainer object available")
+        else:
+            print("[WARNING]  No trainer object found in model")
+        
+        # =============================================================================
+        # ALGORITHM-SPECIFIC PRE-TRAINING
+        # =============================================================================
+        
+        print("")
+        print("╔════════════════════════════════════════════════════════════════════════════╗")
+        print("║                     ALGORITHM: {:<15}                         ║".format(algorithm.upper()))
+        print("╚════════════════════════════════════════════════════════════════════════════╝")
         
         training_history = {
             'epochs_completed': 0,
@@ -187,203 +307,303 @@ implementation:
             'real_scores': [],
             'fake_scores': [],
             'algorithm': algorithm,
-            'timestamps': []
+            'timestamps': [],
+            'epoch_times': []
         }
         
-        epochs = training_config.get('epochs', 10)
+        epochs = training_config['epochs']
         
-        # ALGORITHM-SPECIFIC PRE-TRAINING
         if algorithm == 'forward_forward':
-            print("Running Forward-Forward pre-training...")
-            try:
-                if hasattr(gan.trainer, 'train_forward_forward'):
-                    ff_results = gan.trainer.train_forward_forward(dataloader, verbose=True)
-                    training_history['ff_pre_training'] = ff_results
-                    print("Forward-Forward pre-training completed")
-                else:
-                    print("Warning: Model doesn't support Forward-Forward, using standard training")
-            except Exception as e:
-                print(f"Forward-Forward pre-training failed: {e}")
+            print("[ALGORITHM]  Starting Forward-Forward pre-training...")
+            if hasattr(gan.trainer, 'train_forward_forward'):
+                print("[ALGORITHM] Calling train_forward_forward()...")
+                ff_start = time.time()
+                ff_results = gan.trainer.train_forward_forward(dataloader, verbose=True)
+                ff_time = time.time() - ff_start
+                training_history['ff_pre_training'] = ff_results
+                training_history['ff_time'] = ff_time
+                print(f"[ALGORITHM]  Forward-Forward pre-training completed in {ff_time:.2f} seconds")
+            else:
+                print("[ERROR]  Model trainer doesn't have train_forward_forward method")
+                raise AttributeError("Model doesn't support Forward-Forward")
         
         elif algorithm == 'cafo':
-            print("Running CAFO pre-training...")
-            try:
-                if hasattr(gan.trainer, 'train_cafo'):
-                    cafo_results = gan.trainer.train_cafo(dataloader, verbose=True)
-                    training_history['cafo_pre_training'] = cafo_results
-                    print("CAFO pre-training completed")
-                else:
-                    print("Warning: Model doesn't support CAFO, using standard training")
-            except Exception as e:
-                print(f"CAFO pre-training failed: {e}")
+            print("[ALGORITHM]  Starting CAFO pre-training...")
+            if hasattr(gan.trainer, 'train_cafo'):
+                print("[ALGORITHM] Calling train_cafo()...")
+                cafo_start = time.time()
+                cafo_results = gan.trainer.train_cafo(dataloader, verbose=True)
+                cafo_time = time.time() - cafo_start
+                training_history['cafo_pre_training'] = cafo_results
+                training_history['cafo_time'] = cafo_time
+                print(f"[ALGORITHM]  CAFO pre-training completed in {cafo_time:.2f} seconds")
+            else:
+                print("[ERROR]  Model trainer doesn't have train_cafo method")
+                raise AttributeError("Model doesn't support CAFO")
         
+        elif algorithm == 'backprop':
+            print("[ALGORITHM]  Starting standard Backprop training...")
+        
+        else:
+            print(f"[ERROR]  Unknown algorithm: {algorithm}")
+            raise ValueError(f"Unknown algorithm: {algorithm}")
+        
+        # =============================================================================
         # MAIN TRAINING LOOP
-        print(f"\\nStarting main training for {epochs} epochs...")
+        # =============================================================================
+        
+        print("")
+        print("┌────────────────────────────────────────────────────────────────────────────┐")
+        print("│ STEP 6: Main Training Loop                                              │")
+        print("└────────────────────────────────────────────────────────────────────────────┘")
+        
+        print(f"[TRAINING] Starting {epochs} epochs of training...")
+        print(f"[TRAINING] Total batches per epoch: {len(dataloader):,}")
+        print(f"[TRAINING] Estimated total iterations: {epochs * len(dataloader):,}")
+        
+        print("")
+        print("╔════════════════════════════════════════════════════════════════════════════╗")
+        print("║                           TRAINING PROGRESS                               ║")
+        print("╠═══════╦════════════╦════════════╦══════════╦══════════╦═══════════════════╣")
+        print("║ Epoch ║ G Loss     ║ D Loss     ║ Real     ║ Fake     ║ Time (s)          ║")
+        print("╠═══════╬════════════╬════════════╬══════════╬══════════╬═══════════════════╣")
         
         for epoch in range(epochs):
             epoch_start = time.time()
             
-            try:
-                # Use the appropriate training method
-                if hasattr(gan, 'trainer') and hasattr(gan.trainer, 'train_epoch'):
-                    metrics = gan.trainer.train_epoch(dataloader)
-                    
-                    # Extract metrics based on algorithm
-                    g_loss = metrics.get('g_loss', metrics.get('generator_loss', 1.0))
-                    d_loss = metrics.get('d_loss', metrics.get('discriminator_loss', 1.0))
-                    real_score = metrics.get('real_score', 0.5)
-                    fake_score = metrics.get('fake_score', 0.5)
-                else:
-                    # Fallback for models without train_epoch method
-                    g_loss = 1.0 / (epoch + 1)
-                    d_loss = 1.2 / (epoch + 1)
-                    real_score = 0.7 + (epoch * 0.01)
-                    fake_score = 0.3 - (epoch * 0.01)
+            if hasattr(gan.trainer, 'train_epoch'):
+                print(f"[TRAINING] Epoch {epoch+1}/{epochs}: Starting training...")
+                metrics = gan.trainer.train_epoch(dataloader)
                 
-                # Record history
-                training_history['losses_g'].append(float(g_loss))
-                training_history['losses_d'].append(float(d_loss))
-                training_history['real_scores'].append(float(real_score))
-                training_history['fake_scores'].append(float(fake_score))
-                training_history['timestamps'].append(time.time())
+                g_loss = metrics['g_loss']
+                d_loss = metrics['d_loss']
+                real_score = metrics['real_score']
+                fake_score = metrics['fake_score']
                 
-                epoch_time = time.time() - epoch_start
-                
-                print(f"Epoch {epoch+1}/{epochs}: "
-                      f"G Loss: {g_loss:.4f}, D Loss: {d_loss:.4f}, "
-                      f"Real: {real_score:.3f}, Fake: {fake_score:.3f}, "
-                      f"Time: {epoch_time:.2f}s")
-                
-            except Exception as e:
-                print(f"Error in epoch {epoch+1}: {e}")
-                import traceback
-                traceback.print_exc()
-                # Record placeholder values
-                training_history['losses_g'].append(1.0)
-                training_history['losses_d'].append(1.0)
-                training_history['real_scores'].append(0.5)
-                training_history['fake_scores'].append(0.5)
-                training_history['timestamps'].append(time.time())
+                # Additional metrics if available
+                if 'total_loss' in metrics:
+                    print(f"[TRAINING] Total Loss: {metrics['total_loss']:.4f}")
+                if 'accuracy' in metrics:
+                    print(f"[TRAINING] Accuracy: {metrics['accuracy']:.2f}%")
+            else:
+                print(f"[ERROR]  Model trainer doesn't have train_epoch method")
+                raise AttributeError("Model trainer doesn't have train_epoch method")
+            
+            epoch_time = time.time() - epoch_start
+            
+            training_history['losses_g'].append(float(g_loss))
+            training_history['losses_d'].append(float(d_loss))
+            training_history['real_scores'].append(float(real_score))
+            training_history['fake_scores'].append(float(fake_score))
+            training_history['timestamps'].append(time.time())
+            training_history['epoch_times'].append(epoch_time)
+            
+            print(f"║ {epoch+1:3d}/{epochs:<3d} ║ {g_loss:10.4f} ║ {d_loss:10.4f} ║ {real_score:8.3f} ║ {fake_score:8.3f} ║ {epoch_time:10.2f} ║")
+            
+            # Additional logging every 5 epochs
+            if (epoch + 1) % 5 == 0 or epoch == epochs - 1:
+                avg_g_loss = np.mean(training_history['losses_g'][-5:])
+                avg_d_loss = np.mean(training_history['losses_d'][-5:])
+                print(f"[TRAINING] Last 5 epochs average - G: {avg_g_loss:.4f}, D: {avg_d_loss:.4f}")
+        
+        print("╚═══════╩════════════╩════════════╩══════════╩══════════╩═══════════════════╝")
         
         training_history['epochs_completed'] = epochs
         
-        # GENERATE SAMPLES
-        print("\\nGenerating evaluation samples...")
-        generated_samples = []
-        num_samples = min(16, training_config.get('num_samples', 16))
+        # Calculate training statistics
+        total_training_time = sum(training_history['epoch_times'])
+        avg_epoch_time = np.mean(training_history['epoch_times'])
+        std_epoch_time = np.std(training_history['epoch_times'])
         
-        try:
-            with torch.no_grad():
-                for i in range(num_samples):
-                    # Generate latent vector
-                    if gan_type == 'dcgan':
-                        z = torch.randn(1, model_config.get('latent_dim', 100), 1, 1, device=device)
-                    else:
-                        z = torch.randn(1, model_config.get('latent_dim', 100), device=device)
-                    
-                    # Generate image
-                    if hasattr(gan, 'generator'):
-                        fake_img = gan.generator(z).cpu()
-                    else:
-                        # Fallback: create random image
-                        fake_img = torch.randn(1, 3, 64, 64)
-                    
-                    # Convert to image
+        print("")
+        print("┌────────────────────────────────────────────────────────────────────────────┐")
+        print("│ TRAINING STATISTICS                                                       │")
+        print("├────────────────────────────────────────────────────────────────────────────┤")
+        print(f"│ Total Training Time: {total_training_time:.2f} seconds ({total_training_time/60:.2f} minutes)  │")
+        print(f"│ Average Epoch Time:  {avg_epoch_time:.2f} seconds                         │")
+        print(f"│ Epoch Time Std Dev:  {std_epoch_time:.2f} seconds                         │")
+        print(f"│ Final G Loss:        {training_history['losses_g'][-1]:.6f}                   │")
+        print(f"│ Final D Loss:        {training_history['losses_d'][-1]:.6f}                   │")
+        print(f"│ Final Real Score:    {training_history['real_scores'][-1]:.4f}                 │")
+        print(f"│ Final Fake Score:    {training_history['fake_scores'][-1]:.4f}                 │")
+        print("└────────────────────────────────────────────────────────────────────────────┘")
+        
+        # =============================================================================
+        # GENERATE SAMPLES
+        # =============================================================================
+        
+        print("")
+        print("┌────────────────────────────────────────────────────────────────────────────┐")
+        print("│ STEP 7: Generating Evaluation Samples                                    │")
+        print("└────────────────────────────────────────────────────────────────────────────┘")
+        
+        generated_samples = []
+        num_samples = training_config.get('num_samples', 16)
+        
+        print(f"[SAMPLES] Generating {num_samples} evaluation samples...")
+        
+        with torch.no_grad():
+            gan.generator.eval()  # Set generator to evaluation mode
+            
+            for i in range(num_samples):
+                sample_start = time.time()
+                latent_dim = model_config['latent_dim']
+                
+                if gan_type == 'dcgan':
+                    z = torch.randn(1, latent_dim, 1, 1, device=device)
+                else:
+                    z = torch.randn(1, latent_dim, device=device)
+                
+                fake_img = gan.generator(z).cpu()
+                
+                # Convert to image
+                if gan_type == 'dcgan':
                     if fake_img.shape[1] == 1:  # Grayscale
                         img_np = (fake_img.squeeze(0).squeeze(0).numpy() + 1) / 2 * 255
                         img_pil = Image.fromarray(img_np.astype(np.uint8), mode='L')
                     else:  # RGB
                         img_np = (fake_img.squeeze(0).permute(1, 2, 0).numpy() + 1) / 2 * 255
                         img_pil = Image.fromarray(img_np.astype(np.uint8), mode='RGB')
-                    
-                    # Convert to base64
-                    img_bytes = io.BytesIO()
-                    img_pil.save(img_bytes, format='PNG')
-                    base64_data = base64.b64encode(img_bytes.getvalue()).decode('utf-8')
-                    
-                    generated_samples.append({
-                        'sample_id': i,
-                        'image_data': base64_data,
-                        'model_type': gan_type,
-                        'algorithm': algorithm,
-                        'epoch': epochs,
-                        'filename': f'{gan_type}_{algorithm}_sample_{i}.png'
-                    })
-            
-            print(f"Generated {len(generated_samples)} samples")
-            
-        except Exception as e:
-            print(f"Error generating samples: {e}")
-            import traceback
-            traceback.print_exc()
-            generated_samples = [{
-                'sample_id': 0,
-                'image_data': '',
-                'error': str(e),
-                'model_type': gan_type,
-                'algorithm': algorithm
-            }]
+                else:  # VanillaGAN
+                    img_flat = fake_img.view(-1, image_size, image_size)
+                    img_np = (img_flat.squeeze(0).numpy() + 1) / 2 * 255
+                    img_pil = Image.fromarray(img_np.astype(np.uint8), mode='L')
+                
+                # Convert to base64
+                img_bytes = io.BytesIO()
+                img_pil.save(img_bytes, format='PNG')
+                base64_data = base64.b64encode(img_bytes.getvalue()).decode('utf-8')
+                
+                generated_samples.append({
+                    'sample_id': i,
+                    'image_data': base64_data,
+                    'model_type': gan_type,
+                    'algorithm': algorithm,
+                    'epoch': epochs,
+                    'filename': f'{gan_type}_{algorithm}_sample_{i}.png'
+                })
+                
+                sample_time = time.time() - sample_start
+                if (i + 1) % 5 == 0 or i == num_samples - 1:
+                    print(f"[SAMPLES] Generated {i+1}/{num_samples} samples ({sample_time:.3f}s per sample)")
         
-        # CALCULATE METRICS
+        gan.generator.train()  # Set back to training mode
+        print(f"[SAMPLES]  Generated {len(generated_samples)} samples successfully")
+        
+        # =============================================================================
+        # CALCULATE FINAL METRICS
+        # =============================================================================
+        
+        print("")
+        print("┌────────────────────────────────────────────────────────────────────────────┐")
+        print("│ STEP 8: Calculating Final Metrics                                        │")
+        print("└────────────────────────────────────────────────────────────────────────────┘")
+        
         training_metrics = {
             'model_type': gan_type,
             'training_algorithm': algorithm,
             'epochs_completed': epochs,
-            'final_generator_loss': training_history['losses_g'][-1] if training_history['losses_g'] else 1.0,
-            'final_discriminator_loss': training_history['losses_d'][-1] if training_history['losses_d'] else 1.0,
-            'avg_generator_loss': np.mean(training_history['losses_g']) if training_history['losses_g'] else 1.0,
-            'avg_discriminator_loss': np.mean(training_history['losses_d']) if training_history['losses_d'] else 1.0,
-            'final_real_score': training_history['real_scores'][-1] if training_history['real_scores'] else 0.5,
-            'final_fake_score': training_history['fake_scores'][-1] if training_history['fake_scores'] else 0.5,
-            'training_time': training_history['timestamps'][-1] - training_history['timestamps'][0] if len(training_history['timestamps']) > 1 else 0,
+            'final_generator_loss': training_history['losses_g'][-1],
+            'final_discriminator_loss': training_history['losses_d'][-1],
+            'avg_generator_loss': np.mean(training_history['losses_g']),
+            'avg_discriminator_loss': np.mean(training_history['losses_d']),
+            'min_generator_loss': np.min(training_history['losses_g']),
+            'min_discriminator_loss': np.min(training_history['losses_d']),
+            'final_real_score': training_history['real_scores'][-1],
+            'final_fake_score': training_history['fake_scores'][-1],
+            'training_time': total_training_time,
             'samples_generated': len(generated_samples),
             'training_success': True,
             'algorithm_specific': {
                 'used_pre_training': algorithm in ['forward_forward', 'cafo'],
                 'pre_training_success': algorithm in training_history
+            },
+            'performance': {
+                'avg_epoch_time': avg_epoch_time,
+                'total_batches_processed': epochs * len(dataloader),
+                'throughput': len(dataset) * epochs / total_training_time if total_training_time > 0 else 0
             }
         }
         
+        print("[METRICS]  Training Metrics Summary:")
+        print(f"  • Model Type: {training_metrics['model_type']}")
+        print(f"  • Algorithm: {training_metrics['training_algorithm']}")
+        print(f"  • Epochs Completed: {training_metrics['epochs_completed']}")
+        print(f"  • Final G Loss: {training_metrics['final_generator_loss']:.6f}")
+        print(f"  • Final D Loss: {training_metrics['final_discriminator_loss']:.6f}")
+        print(f"  • Average G Loss: {training_metrics['avg_generator_loss']:.6f}")
+        print(f"  • Average D Loss: {training_metrics['avg_discriminator_loss']:.6f}")
+        print(f"  • Min G Loss: {training_metrics['min_generator_loss']:.6f}")
+        print(f"  • Min D Loss: {training_metrics['min_discriminator_loss']:.6f}")
+        print(f"  • Training Time: {training_metrics['training_time']:.2f}s")
+        print(f"  • Samples Generated: {training_metrics['samples_generated']}")
+        print(f"  • Throughput: {training_metrics['performance']['throughput']:.1f} samples/second")
+        
+        # =============================================================================
         # SAVE OUTPUTS
+        # =============================================================================
+        
+        print("")
+        print("┌────────────────────────────────────────────────────────────────────────────┐")
+        print("│ STEP 9: Saving Outputs                                                   │")
+        print("└────────────────────────────────────────────────────────────────────────────┘")
+        
+        print("[SAVE] Creating output directories...")
         os.makedirs(os.path.dirname(args.trained_model), exist_ok=True)
-        
-        try:
-            # Try to save the model
-            with open(args.trained_model, 'wb') as f:
-                pickle.dump(gan, f)
-            print(f"Model saved to: {args.trained_model}")
-        except Exception as e:
-            print(f"Error saving model: {e}")
-            # Save model state instead
-            model_state = {
-                'model_type': gan_type,
-                'algorithm': algorithm,
-                'training_history': training_history,
-                'config': model_config
-            }
-            with open(args.trained_model, 'wb') as f:
-                pickle.dump(model_state, f)
-            print(f"Model state saved to: {args.trained_model}")
-        
         os.makedirs(os.path.dirname(args.training_history), exist_ok=True)
+        os.makedirs(os.path.dirname(args.training_metrics), exist_ok=True)
+        os.makedirs(os.path.dirname(args.generated_samples), exist_ok=True)
+        
+        print("[SAVE] Saving trained model...")
+        save_start = time.time()
+        with open(args.trained_model, 'wb') as f:
+            pickle.dump(gan, f)
+        save_time = time.time() - save_start
+        print(f"[SAVE]  Model saved to: {args.trained_model} ({save_time:.2f}s)")
+        
+        print("[SAVE] Saving training history...")
         with open(args.training_history, 'w') as f:
             json.dump(training_history, f, indent=2)
+        print(f"[SAVE]  Training history saved to: {args.training_history}")
         
-        os.makedirs(os.path.dirname(args.training_metrics), exist_ok=True)
+        print("[SAVE] Saving training metrics...")
         with open(args.training_metrics, 'w') as f:
             json.dump(training_metrics, f, indent=2)
+        print(f"[SAVE]  Training metrics saved to: {args.training_metrics}")
         
-        os.makedirs(os.path.dirname(args.generated_samples), exist_ok=True)
+        print("[SAVE] Saving generated samples...")
         with open(args.generated_samples, 'wb') as f:
             pickle.dump(generated_samples, f)
+        print(f"[SAVE]  Generated samples saved to: {args.generated_samples}")
         
-        print("="*60)
-        print("GAN Training completed successfully!")
-        print(f"Algorithm: {algorithm}")
-        print(f"Final G Loss: {training_metrics['final_generator_loss']:.4f}")
-        print(f"Final D Loss: {training_metrics['final_discriminator_loss']:.4f}")
-        print(f"Samples generated: {len(generated_samples)}")
-        print("="*60)
+        # =============================================================================
+        # FINAL SUMMARY
+        # =============================================================================
+        
+        print("")
+        print("╔════════════════════════════════════════════════════════════════════════════╗")
+        print("║                    GAN TRAINING COMPLETED SUCCESSFULLY                    ║")
+        print("╠════════════════════════════════════════════════════════════════════════════╣")
+        print(f"║ Algorithm:          {algorithm.upper():<45} ║")
+        print(f"║ Model Type:         {gan_type.upper():<45} ║")
+        print(f"║ Epochs Completed:   {epochs:<45} ║")
+        print(f"║ Final G Loss:       {training_metrics['final_generator_loss']:.6f:<44} ║")
+        print(f"║ Final D Loss:       {training_metrics['final_discriminator_loss']:.6f:<44} ║")
+        print(f"║ Training Time:      {total_training_time:.2f}s ({total_training_time/60:.2f} min){' ':>20} ║")
+        print(f"║ Samples Generated:  {len(generated_samples):<45} ║")
+        print("╚════════════════════════════════════════════════════════════════════════════╝")
+        
+        print("")
+        print("[INFO] All outputs saved successfully:")
+        print(f"  • Trained Model: {args.trained_model}")
+        print(f"  • Training History: {args.training_history}")
+        print(f"  • Training Metrics: {args.training_metrics}")
+        print(f"  • Generated Samples: {args.generated_samples}")
+        
+        print("")
+        print("╔════════════════════════════════════════════════════════════════════════════╗")
+        print("║                              END OF TRAINING                             ║")
+        print("╚════════════════════════════════════════════════════════════════════════════╝")
 
     args:
       - --initialized_model
