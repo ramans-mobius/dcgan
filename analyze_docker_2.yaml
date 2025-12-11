@@ -1,4 +1,4 @@
-name: Container Diagnostic
+name: 2 Container Diagnostic
 description: Comprehensive diagnostic for nesy-factory v36-gpu container environment
 inputs:
   - name: dummy_input
@@ -597,14 +597,20 @@ implementation:
         '''
         
         for issue in diagnostic_data['issues']:
-            summary_text += f'  [{issue['severity']}] {issue['category']}: {issue['message']}\\n'
+            severity = issue['severity']
+            category = issue['category']
+            message = issue['message']
+            summary_text += f'  [{severity}] {category}: {message}\\n'
         
         summary_text += '''
         RECOMMENDATIONS:
         '''
         
         for i, rec in enumerate(recommendations, 1):
-            summary_text += f'  {i}. [{rec['priority']}] {rec['action']}: {rec['details']}\\n'
+            priority = rec['priority']
+            action = rec['action']
+            details = rec['details']
+            summary_text += f'  {i}. [{priority}] {action}: {details}\\n'
         
         summary_text += '''
         NEXT STEPS:
@@ -624,11 +630,11 @@ implementation:
         print('\\n' + '='*80)
         print('DIAGNOSTIC COMPLETED')
         print('='*80)
-        print(f'Overall Status: {summary['overall_status']}')
-        print(f'Critical Issues: {summary['critical_issues']}')
-        print(f'Warnings: {summary['warnings']}')
+        print(f'Overall Status: {summary["overall_status"]}')
+        print(f'Critical Issues: {summary["critical_issues"]}')
+        print(f'Warnings: {summary["warnings"]}')
         print(f'nesy_factory Found: {nesy_found}')
-        print(f'CUDA Available: {diagnostic_data['gpu_status'].get('pytorch_cuda_available', False)}')
+        print(f'CUDA Available: {diagnostic_data["gpu_status"].get("pytorch_cuda_available", False)}')
         print('\\nCheck the output files for detailed results.')
         
     args:
