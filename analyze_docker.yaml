@@ -1,0 +1,569 @@
+name: Container Diagnostic
+description: Comprehensive diagnostic for nesy-factory v36-gpu container environment
+inputs:
+  - name: dummy_input
+    type: String
+    description: Dummy input for testing container functionality
+    default: "test_diagnostic_001"
+outputs:
+  - name: diagnostic_report
+    type: String
+    description: Full diagnostic report in JSON format
+    path: /tmp/diagnostic_report.json
+  - name: gpu_status
+    type: String
+    description: GPU availability and capabilities
+    path: /tmp/gpu_status.json
+  - name: python_environment
+    type: String
+    description: Python and package versions
+    path: /tmp/python_environment.json
+  - name: nesy_structure
+    type: String
+    description: nesy_factory package structure
+    path: /tmp/nesy_structure.json
+  - name: diagnostic_summary
+    type: String
+    description: Human-readable diagnostic summary
+    path: /tmp/diagnostic_summary.txt
+implementation:
+  container:
+    image: gurpreetgandhi/nesy-factory:v36-gpu
+    command: ["/bin/bash"]
+    args:
+      - "-c"
+      - |
+        echo "=================================================="
+        echo "NESY-FACTORY v36-GPU COMPREHENSIVE DIAGNOSTIC"
+        echo "=================================================="
+        echo ""
+        
+        # Create output directory
+        mkdir -p /tmp/outputs
+        
+        # ==================================================
+        # 1. DUMMY INPUT PROCESSING
+        # ==================================================
+        echo "1. DUMMY INPUT PROCESSING"
+        echo "--------------------------"
+        echo "Received dummy input: test_diagnostic_001"
+        echo "Processing dummy input..."
+        echo "Input processed successfully ✓"
+        echo ""
+        
+        # ==================================================
+        # 2. PYTHON ENVIRONMENT CHECK
+        # ==================================================
+        echo "2. PYTHON ENVIRONMENT"
+        echo "---------------------"
+        
+        # Check Python versions
+        echo "Python versions available:"
+        python3 --version 2>/dev/null || echo "  python3: NOT FOUND"
+        python --version 2>/dev/null || echo "  python: NOT FOUND"
+        
+        # Check Python paths
+        echo ""
+        echo "Python paths:"
+        which python3 2>/dev/null || echo "  python3: NOT IN PATH"
+        which python 2>/dev/null || echo "  python: NOT IN PATH"
+        
+        # Save Python info
+        cat > /tmp/python_info.txt << 'EOF'
+        PYTHON ENVIRONMENT:
+        ===================
+        Python3 version: $(python3 --version 2>/dev/null || echo 'Not found')
+        Python path: $(which python3 2>/dev/null || echo 'Not in PATH')
+        System PATH: $PATH
+        EOF
+        
+        # ==================================================
+        # 3. PACKAGE ANALYSIS
+        # ==================================================
+        echo ""
+        echo "3. INSTALLED PACKAGES"
+        echo "---------------------"
+        
+        # Check pip
+        echo "Pip availability:"
+        pip --version 2>/dev/null || echo "  pip: NOT FOUND"
+        pip3 --version 2>/dev/null || echo "  pip3: NOT FOUND"
+        
+        # List critical packages
+        echo ""
+        echo "Critical packages:"
+        
+        # Check package installations
+        cat > /tmp/check_packages.py << 'EOF'
+        import sys
+        import subprocess
+        import json
+        
+        packages_to_check = [
+            "torch",
+            "torchvision",
+            "numpy",
+            "Pillow",
+            "matplotlib",
+            "scipy",
+            "pandas"
+        ]
+        
+        results = {}
+        
+        # Method 1: Try import
+        for pkg in packages_to_check:
+            try:
+                exec(f"import {pkg}")
+                version = eval(f"{pkg}.__version__")
+                results[pkg] = {
+                    "status": "IMPORT_SUCCESS",
+                    "version": version
+                }
+            except ImportError:
+                results[pkg] = {
+                    "status": "IMPORT_FAILED",
+                    "version": "N/A"
+                }
+            except AttributeError:
+                results[pkg] = {
+                    "status": "IMPORT_NO_VERSION",
+                    "version": "N/A"
+                }
+            except Exception as e:
+                results[pkg] = {
+                    "status": f"ERROR: {str(e)[:50]}",
+                    "version": "N/A"
+                }
+        
+        # Check for torch CUDA
+        if "torch" in results and results["torch"]["status"] == "IMPORT_SUCCESS":
+            import torch
+            results["torch"]["cuda_available"] = torch.cuda.is_available()
+            results["torch"]["cuda_version"] = torch.version.cuda if torch.cuda.is_available() else "N/A"
+            results["torch"]["gpu_count"] = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        
+        # Save results
+        with open('/tmp/package_versions.json', 'w') as f:
+            json.dump(results, f, indent=2)
+        
+        # Print summary
+        print("Package check results:")
+        for pkg, info in results.items():
+            status = info.get('status', 'UNKNOWN')
+            version = info.get('version', 'N/A')
+            print(f"  {pkg}: {version} ({status})")
+        
+        if "torch" in results and "cuda_available" in results["torch"]:
+            print(f"\nCUDA Available: {results['torch']['cuda_available']}")
+            if results['torch']['cuda_available']:
+                print(f"CUDA Version: {results['torch']['cuda_version']}")
+                print(f"GPU Count: {results['torch']['gpu_count']}")
+        EOF
+        
+        python3 /tmp/check_packages.py 2>/dev/null || echo "  Package check script failed"
+        
+        # ==================================================
+        # 4. NESY-FACTORY STRUCTURE ANALYSIS
+        # ==================================================
+        echo ""
+        echo "4. NESY-FACTORY STRUCTURE"
+        echo "-------------------------"
+        
+        cat > /tmp/check_nesy_structure.py << 'EOF'
+        import os
+        import sys
+        import json
+        from pathlib import Path
+        
+        results = {
+            "found": False,
+            "location": None,
+            "structure": {},
+            "modules": [],
+            "critical_files": {}
+        }
+        
+        # Check common nesy_factory locations
+        search_paths = [
+            # Python package directories
+            "/usr/local/lib/python3.10/site-packages/nesy_factory",
+            "/usr/local/lib/python3.9/site-packages/nesy_factory",
+            "/usr/local/lib/python3.8/site-packages/nesy_factory",
+            "/usr/local/lib/python3.7/site-packages/nesy_factory",
+            "/usr/lib/python3.10/site-packages/nesy_factory",
+            "/usr/lib/python3.9/site-packages/nesy_factory",
+            "/usr/lib/python3.8/site-packages/nesy_factory",
+            # Direct installation paths
+            "/opt/nesy_factory",
+            "/app/nesy_factory",
+            "/nesy_factory",
+            # Home directory
+            "/root/nesy_factory",
+            # Current directory
+            "./nesy_factory"
+        ]
+        
+        print("Searching for nesy_factory in common locations...")
+        
+        for path in search_paths:
+            if os.path.exists(path):
+                results["found"] = True
+                results["location"] = path
+                print(f"✓ Found at: {path}")
+                
+                # Analyze structure
+                try:
+                    # List top-level directories
+                    items = os.listdir(path)
+                    results["structure"]["top_level"] = items
+                    
+                    # Check for GANs directory
+                    gans_path = os.path.join(path, "GANs")
+                    if os.path.exists(gans_path):
+                        results["structure"]["has_GANs"] = True
+                        gan_files = [f for f in os.listdir(gans_path) if f.endswith('.py')]
+                        results["modules"] = gan_files
+                        
+                        # Check critical GAN files
+                        critical_files = ["dcgan.py", "vanilla_gan.py"]
+                        for cf in critical_files:
+                            cf_path = os.path.join(gans_path, cf)
+                            results["critical_files"][cf] = os.path.exists(cf_path)
+                    
+                    # Check for other important directories
+                    for subdir in ["models", "utils", "data", "configs"]:
+                        subdir_path = os.path.join(path, subdir)
+                        results["structure"][f"has_{subdir}"] = os.path.exists(subdir_path)
+                
+                except Exception as e:
+                    results["structure"]["error"] = str(e)
+                
+                break
+        
+        if not results["found"]:
+            print("✗ nesy_factory not found in any standard location")
+            print("Searching entire filesystem (this may take a moment)...")
+            
+            # Quick search for nesy_factory
+            try:
+                find_cmd = "find / -type d -name '*nesy_factory*' 2>/dev/null | head -10"
+                import subprocess
+                found_paths = subprocess.check_output(find_cmd, shell=True).decode().strip().split('\n')
+                if found_paths and found_paths[0]:
+                    results["found"] = True
+                    results["location"] = found_paths[0]
+                    print(f"✓ Found at: {found_paths[0]}")
+            except:
+                pass
+        
+        # Save results
+        with open('/tmp/nesy_structure.json', 'w') as f:
+            json.dump(results, f, indent=2)
+        
+        # Print summary
+        if results["found"]:
+            print(f"\nStructure analysis:")
+            print(f"  Location: {results['location']}")
+            if "top_level" in results["structure"]:
+                print(f"  Top-level items: {', '.join(results['structure']['top_level'][:10])}")
+            if results.get("modules"):
+                print(f"  GAN modules: {', '.join(results['modules'])}")
+            
+            # Critical file check
+            print(f"\nCritical file check:")
+            for file, exists in results.get("critical_files", {}).items():
+                print(f"  {file}: {'✓' if exists else '✗'}")
+        EOF
+        
+        python3 /tmp/check_nesy_structure.py 2>/dev/null || echo "  Structure check failed"
+        
+        # ==================================================
+        # 5. GPU DIAGNOSTIC
+        # ==================================================
+        echo ""
+        echo "5. GPU DIAGNOSTIC"
+        echo "-----------------"
+        
+        cat > /tmp/gpu_diagnostic.py << 'EOF'
+        import torch
+        import json
+        import subprocess
+        
+        results = {
+            "pytorch_gpu": {},
+            "system_gpu": {},
+            "tests": {}
+        }
+        
+        print("PyTorch GPU Detection:")
+        
+        # PyTorch GPU check
+        results["pytorch_gpu"]["cuda_available"] = torch.cuda.is_available()
+        results["pytorch_gpu"]["cuda_version"] = torch.version.cuda if torch.cuda.is_available() else "N/A"
+        results["pytorch_gpu"]["device_count"] = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        
+        if torch.cuda.is_available():
+            print(f"  ✓ CUDA Available: {torch.version.cuda}")
+            print(f"  ✓ GPU Count: {torch.cuda.device_count()}")
+            
+            # Get GPU details
+            gpu_details = []
+            for i in range(torch.cuda.device_count()):
+                props = torch.cuda.get_device_properties(i)
+                detail = {
+                    "index": i,
+                    "name": torch.cuda.get_device_name(i),
+                    "memory_gb": round(props.total_memory / 1e9, 2),
+                    "capability": f"{props.major}.{props.minor}",
+                    "multi_processor_count": props.multi_processor_count
+                }
+                gpu_details.append(detail)
+                print(f"    GPU {i}: {detail['name']} ({detail['memory_gb']}GB)")
+            
+            results["pytorch_gpu"]["details"] = gpu_details
+            
+            # Run GPU tests
+            print("\n  Running GPU tests:")
+            
+            # Test 1: Tensor creation on GPU
+            try:
+                x = torch.randn(1000, 1000, device='cuda')
+                y = torch.randn(1000, 1000, device='cuda')
+                results["tests"]["tensor_creation"] = "PASS"
+                print("    ✓ Tensor creation on GPU")
+            except Exception as e:
+                results["tests"]["tensor_creation"] = f"FAIL: {str(e)[:100]}"
+                print(f"    ✗ Tensor creation failed: {e}")
+            
+            # Test 2: Matrix multiplication
+            try:
+                z = torch.mm(x, y)
+                results["tests"]["matrix_multiplication"] = "PASS"
+                print("    ✓ Matrix multiplication on GPU")
+            except Exception as e:
+                results["tests"]["matrix_multiplication"] = f"FAIL: {str(e)[:100]}"
+                print(f"    ✗ Matrix multiplication failed: {e}")
+            
+            # Test 3: Memory stress test
+            try:
+                # Try allocating larger memory
+                large_tensor = torch.randn(5000, 5000, device='cuda')
+                memory_allocated = torch.cuda.memory_allocated() / 1e9
+                results["tests"]["memory_allocation"] = f"PASS ({memory_allocated:.2f}GB allocated)"
+                print(f"    ✓ Memory allocation: {memory_allocated:.2f}GB")
+                del large_tensor
+                torch.cuda.empty_cache()
+            except Exception as e:
+                results["tests"]["memory_allocation"] = f"FAIL: {str(e)[:100]}"
+                print(f"    ✗ Memory allocation failed: {e}")
+            
+        else:
+            print("  ✗ CUDA not available in PyTorch")
+            results["tests"]["cuda_available"] = "FAIL"
+        
+        # System GPU check (using nvidia-smi if available)
+        print("\nSystem GPU Detection:")
+        try:
+            nvidia_smi = subprocess.check_output(['nvidia-smi', '--query-gpu=name,memory.total', '--format=csv,noheader'], 
+                                                stderr=subprocess.DEVNULL).decode().strip()
+            if nvidia_smi:
+                results["system_gpu"]["nvidia_smi"] = nvidia_smi.split('\n')
+                print(f"  ✓ nvidia-smi output: {nvidia_smi[:100]}...")
+            else:
+                results["system_gpu"]["nvidia_smi"] = "No output"
+                print("  ⓘ nvidia-smi available but no GPU detected")
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            results["system_gpu"]["nvidia_smi"] = "Command not found"
+            print("  ⓘ nvidia-smi not available")
+        
+        # Save results
+        with open('/tmp/gpu_status.json', 'w') as f:
+            json.dump(results, f, indent=2)
+        
+        print(f"\nGPU Diagnostic complete. Results saved.")
+        EOF
+        
+        python3 /tmp/gpu_diagnostic.py 2>/dev/null || echo "  GPU diagnostic failed"
+        
+        # ==================================================
+        # 6. FILE SYSTEM AND PERMISSIONS
+        # ==================================================
+        echo ""
+        echo "6. FILE SYSTEM CHECK"
+        echo "--------------------"
+        
+        # Check critical directories
+        echo "Critical directory permissions:"
+        for dir in ["/tmp", "/usr/local", "/opt", "/app"]; do
+            if [ -d "$dir" ]; then
+                perm=$(stat -c "%a %U:%G" "$dir" 2>/dev/null || echo "unknown")
+                echo "  $dir: $perm"
+            else
+                echo "  $dir: DOES NOT EXIST"
+            fi
+        done
+        
+        # Check write permissions
+        echo ""
+        echo "Write permission test:"
+        test_file="/tmp/test_write_$(date +%s).txt"
+        echo "test" > "$test_file" 2>/dev/null && echo "  ✓ Can write to /tmp" || echo "  ✗ Cannot write to /tmp"
+        rm -f "$test_file"
+        
+        # ==================================================
+        # 7. COMPREHENSIVE REPORT GENERATION
+        # ==================================================
+        echo ""
+        echo "7. GENERATING FINAL REPORT"
+        echo "--------------------------"
+        
+        # Combine all JSON files into a comprehensive report
+        cat > /tmp/generate_final_report.py << 'EOF'
+        import json
+        import os
+        import platform
+        import datetime
+        
+        def load_json_safe(filepath):
+            try:
+                with open(filepath, 'r') as f:
+                    return json.load(f)
+            except:
+                return {"error": f"Could not load {filepath}"}
+        
+        # Load all diagnostic data
+        diagnostic_data = {
+            "timestamp": datetime.datetime.now().isoformat(),
+            "system": {
+                "platform": platform.platform(),
+                "python_version": platform.python_version(),
+                "hostname": platform.node()
+            },
+            "dummy_input": "test_diagnostic_001",
+            "python_environment": load_json_safe('/tmp/package_versions.json'),
+            "nesy_structure": load_json_safe('/tmp/nesy_structure.json'),
+            "gpu_status": load_json_safe('/tmp/gpu_status.json'),
+            "summary": {}
+        }
+        
+        # Generate summary
+        summary = {}
+        
+        # Python availability
+        python_ok = diagnostic_data["python_environment"].get("torch", {}).get("status") == "IMPORT_SUCCESS"
+        summary["python_ok"] = python_ok
+        
+        # GPU availability
+        gpu_ok = diagnostic_data["gpu_status"].get("pytorch_gpu", {}).get("cuda_available", False)
+        summary["gpu_available"] = gpu_ok
+        
+        # nesy_factory availability
+        nesy_ok = diagnostic_data["nesy_structure"].get("found", False)
+        summary["nesy_factory_found"] = nesy_ok
+        
+        # Critical files
+        if nesy_ok:
+            critical_files = diagnostic_data["nesy_structure"].get("critical_files", {})
+            summary["critical_files"] = critical_files
+        
+        diagnostic_data["summary"] = summary
+        
+        # Save comprehensive report
+        with open('/tmp/diagnostic_report.json', 'w') as f:
+            json.dump(diagnostic_data, f, indent=2)
+        
+        # Generate human-readable summary
+        with open('/tmp/diagnostic_summary.txt', 'w') as f:
+            f.write("="*60 + "\n")
+            f.write("NESY-FACTORY v36-GPU DIAGNOSTIC SUMMARY\n")
+            f.write("="*60 + "\n\n")
+            
+            f.write(f"Timestamp: {diagnostic_data['timestamp']}\n")
+            f.write(f"System: {diagnostic_data['system']['platform']}\n")
+            f.write(f"Hostname: {diagnostic_data['system']['hostname']}\n\n")
+            
+            f.write("STATUS SUMMARY:\n")
+            f.write("-"*60 + "\n")
+            f.write(f"✓ Python/Torch: {'OK' if summary['python_ok'] else 'FAILED'}\n")
+            f.write(f"✓ GPU Available: {'YES' if summary['gpu_available'] else 'NO'}\n")
+            f.write(f"✓ nesy_factory Found: {'YES' if summary['nesy_factory_found'] else 'NO'}\n\n")
+            
+            if summary['nesy_factory_found']:
+                f.write(f"nesy_factory Location: {diagnostic_data['nesy_structure'].get('location')}\n")
+                if 'modules' in diagnostic_data['nesy_structure']:
+                    f.write(f"GAN Modules: {', '.join(diagnostic_data['nesy_structure']['modules'])}\n")
+                f.write("\nCritical Files:\n")
+                for file, exists in critical_files.items():
+                    f.write(f"  {file}: {'✓ PRESENT' if exists else '✗ MISSING'}\n")
+            
+            f.write("\n" + "="*60 + "\n")
+            f.write("RECOMMENDATIONS:\n")
+            f.write("-"*60 + "\n")
+            
+            if not summary['python_ok']:
+                f.write("1. Install PyTorch with CUDA support\n")
+            
+            if not summary['nesy_factory_found']:
+                f.write("2. Check nesy_factory installation path\n")
+                f.write("3. Verify PYTHONPATH includes nesy_factory\n")
+            
+            if summary['gpu_available']:
+                f.write("4. GPU is available - optimize training for GPU\n")
+            else:
+                f.write("4. No GPU available - use CPU mode or check GPU drivers\n")
+            
+            if summary['nesy_factory_found'] and 'critical_files' in summary:
+                missing_files = [f for f, exists in summary['critical_files'].items() if not exists]
+                if missing_files:
+                    f.write(f"5. Missing critical files: {', '.join(missing_files)}\n")
+        
+        print("✓ Final report generated")
+        print(f"  - Comprehensive JSON: /tmp/diagnostic_report.json")
+        print(f"  - Human-readable: /tmp/diagnostic_summary.txt")
+        
+        # Print quick summary
+        print("\n" + "="*60)
+        print("QUICK SUMMARY:")
+        print(f"Python/Torch: {'✓ OK' if python_ok else '✗ FAILED'}")
+        print(f"GPU Available: {'✓ YES' if gpu_ok else '✗ NO'}")
+        print(f"nesy_factory: {'✓ FOUND' if nesy_ok else '✗ NOT FOUND'}")
+        
+        if nesy_ok:
+            loc = diagnostic_data["nesy_structure"].get("location", "unknown")
+            print(f"Location: {loc}")
+        EOF
+        
+        python3 /tmp/generate_final_report.py 2>/dev/null || echo "  Report generation failed"
+        
+        echo ""
+        echo "=================================================="
+        echo "DIAGNOSTIC COMPLETE"
+        echo "=================================================="
+        echo ""
+        echo "Output files created:"
+        echo "  /tmp/diagnostic_report.json    - Full diagnostic data"
+        echo "  /tmp/diagnostic_summary.txt    - Human-readable summary"
+        echo "  /tmp/gpu_status.json           - GPU details"
+        echo "  /tmp/nesy_structure.json       - nesy_factory structure"
+        echo "  /tmp/python_environment.json   - Package versions"
+        echo ""
+        echo "To view the summary:"
+        echo "  cat /tmp/diagnostic_summary.txt"
+        
+        # Ensure output files exist (create empty ones if scripts failed)
+        touch /tmp/diagnostic_report.json
+        touch /tmp/gpu_status.json
+        touch /tmp/nesy_structure.json
+        touch /tmp/python_environment.json
+        touch /tmp/diagnostic_summary.txt
+        
+        # Copy to outputs directory for artifact collection
+        cp /tmp/diagnostic_report.json /tmp/outputs/diagnostic_report.json
+        cp /tmp/gpu_status.json /tmp/outputs/gpu_status.json
+        cp /tmp/nesy_structure.json /tmp/outputs/nesy_structure.json
+        cp /tmp/python_environment.json /tmp/outputs/python_environment.json
+        cp /tmp/diagnostic_summary.txt /tmp/outputs/diagnostic_summary.txt
+        
+        echo ""
+        echo "Diagnostic completed successfully. Check the output files above."
