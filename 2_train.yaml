@@ -1,4 +1,4 @@
-name: Train GAN (Backprop/CAFO/Forward-Forward)
+name: 2 Train GAN (Backprop/CAFO/Forward-Forward)
 description: Trains GAN models (DCGAN/Vanilla GAN) with support for Backprop, CAFO, and Forward-Forward algorithms
 inputs:
   - name: initialized_model
@@ -167,7 +167,6 @@ implementation:
         
         # Create DataLoader with proper collate function
         def collate_fn(batch):
-            """Handle different batch formats"""
             if isinstance(batch[0], torch.Tensor):
                 images = torch.stack(batch)
             elif isinstance(batch[0], tuple):
