@@ -1,4 +1,4 @@
-name: Train GAN (Backprop/CAFO/Forward-Forward)
+name: hello Train GAN (Backprop/CAFO/Forward-Forward)
 description: Trains GAN models (DCGAN/Vanilla GAN) with support for Backprop, CAFO, and Forward-Forward algorithms
 inputs:
   - name: initialized_model
@@ -30,9 +30,9 @@ implementation:
         set -e
         
         echo "Starting GAN training..."
-        echo "Checking existing installations..."
-        python3 -c "import torch; print(f'Torch version: {torch.__version__}')"
-        python3 -c "import torchvision; print(f'Torchvision version: {torchvision.__version__}')"
+        echo "Installing torchvision..."
+        pip install torchvision==0.15.2 --quiet
+        echo "Torchvision installed"
         
         exec "$0" "$@"
       - python3
@@ -61,7 +61,7 @@ implementation:
         print("="*80)
         
         # =============================================================================
-        # DEFINE GANDataset CLASS (MUST BE IDENTICAL TO PREPROCESS BRICK)
+        # GANDataset CLASS (Same as in Preprocess brick)
         # =============================================================================
         
         class GANDataset(Dataset):
@@ -122,90 +122,61 @@ implementation:
         training_config = gan_config.get('training', {})
         dataset_config = gan_config.get('dataset', {})
         
-        # Get configuration from the Build brick
         gan_type = model_config.get('gan_type', 'dcgan').lower()
         algorithm = model_config.get('training_algorithm', 'backprop').lower()
         latent_dim = model_config.get('latent_dim', 100)
-        learning_rate = training_config.get('learning_rate', 0.0002)
-        
-        # Get optimal training parameters
         epochs = training_config.get('epochs', 10)
         batch_size = training_config.get('batch_size', 32)
+        image_size = dataset_config.get('image_size', 64)
+        channels = dataset_config.get('channels', 1)
+        learning_rate = training_config.get('learning_rate', 0.0002)
         
-        print(f"\\nCONFIGURATION FROM BUILD BRICK:")
+        print(f"\\nCONFIGURATION:")
         print(f"  GAN Type: {gan_type}")
         print(f"  Algorithm: {algorithm}")
+        print(f"  Latent Dimension: {latent_dim}")
         print(f"  Epochs: {epochs}")
         print(f"  Batch Size: {batch_size}")
-        print(f"  Latent Dimension: {latent_dim}")
+        print(f"  Image Size: {image_size}")
+        print(f"  Channels: {channels}")
         print(f"  Learning Rate: {learning_rate}")
         
         # =============================================================================
-        # LOAD DATA - FIX PICKLE ISSUE
+        # LOAD DATA
         # =============================================================================
         
-        print("\\n[1/3] LOADING PREPROCESSED DATA")
+        print("\\n[1/4] LOADING PREPROCESSED DATA")
         print("-"*50)
         
-        # First, check what's in the pickle file
-        try:
-            with open(args.preprocessed_data, 'rb') as f:
-                # Use Unpickler to handle the GANDataset class
-                unpickler = pickle.Unpickler(f)
-                # Tell unpickler to find GANDataset in the current module
-                unpickler.find_class = lambda module, name: (
-                    GANDataset if name == 'GANDataset' else 
-                    getattr(sys.modules[module], name) if module in sys.modules else 
-                    __builtins__[name] if name in __builtins__ else None
-                )
-                
-                data_wrapper = unpickler.load()
-                print(f"Data loaded successfully using custom unpickler")
-                
-        except Exception as e1:
-            print(f"Custom unpickler failed: {e1}")
-            print("Trying direct load...")
-            
-            # Try direct load
-            try:
-                with open(args.preprocessed_data, 'rb') as f:
-                    data_wrapper = pickle.load(f)
-                    print(f"Direct pickle load successful")
-            except Exception as e2:
-                print(f"Direct load also failed: {e2}")
-                print("Creating fallback dataset...")
-                
-                # Create fallback dataset
-                data_wrapper = {
-                    'dataset': [],
-                    'model_type': gan_type,
-                    'image_size': 64,
-                    'channels': 1
-                }
+        with open(args.preprocessed_data, 'rb') as f:
+            data_wrapper = pickle.load(f)
         
         print(f"Data wrapper type: {type(data_wrapper)}")
         
-        # Extract dataset
         if isinstance(data_wrapper, dict) and 'dataset' in data_wrapper:
             dataset = data_wrapper['dataset']
-            actual_model_type = data_wrapper.get('model_type', gan_type)
-            actual_image_size = data_wrapper.get('image_size', 64)
-            actual_channels = data_wrapper.get('channels', 1)
+            wrapper_model_type = data_wrapper.get('model_type', gan_type)
+            wrapper_image_size = data_wrapper.get('image_size', image_size)
+            wrapper_channels = data_wrapper.get('channels', channels)
+            wrapper_input_dim = data_wrapper.get('input_dim')
             
-            print(f"Dataset extracted:")
+            print(f"DATASET INFO:")
             print(f"  Samples: {len(dataset)}")
-            print(f"  Model Type: {actual_model_type}")
-            print(f"  Image Size: {actual_image_size}")
-            print(f"  Channels: {actual_channels}")
+            print(f"  Model Type: {wrapper_model_type}")
+            print(f"  Image Size: {wrapper_image_size}")
+            print(f"  Channels: {wrapper_channels}")
+            print(f"  Input Dim: {wrapper_input_dim}")
             
-            gan_type = actual_model_type
-            image_size = actual_image_size
-            channels = actual_channels
+            if wrapper_model_type != gan_type:
+                print(f"  Model type mismatch: Config={gan_type}, Wrapper={wrapper_model_type}")
+                gan_type = wrapper_model_type
+            
+            image_size = wrapper_image_size
+            channels = wrapper_channels
         else:
-            print(f"Unexpected data format, using as-is")
+            print(f"Unexpected data format: {type(data_wrapper)}")
             dataset = data_wrapper
         
-        # Create DataLoader
         def collate_fn(batch):
             if isinstance(batch[0], torch.Tensor):
                 images = torch.stack(batch)
@@ -229,97 +200,129 @@ implementation:
             num_workers=0
         )
         
-        print(f"Dataloader created:")
-        print(f"  Batches per epoch: {len(dataloader)}")
+        print(f"DATALOADER INFO:")
+        print(f"  Total Batches: {len(dataloader)}")
+        print(f"  Batch Size: {batch_size}")
+        print(f"  Total Samples: {len(dataset)}")
         
         # =============================================================================
-        # LOAD MODEL
+        # LOAD GAN MODULES FROM NESY_FACTORY
         # =============================================================================
         
-        print("\\n[2/3] LOADING INITIALIZED MODEL")
+        print("\\n[2/4] LOADING GAN MODULES FROM NESY_FACTORY")
         print("-"*50)
         
-        # Load GAN modules from files
+        # Load DCGAN module
         try:
             dcgan_path = "/usr/local/lib/python3.10/site-packages/nesy_factory/GANs/dcgan.py"
             with open(dcgan_path, 'r') as f:
-                exec(f.read(), globals())
-            print("DCGAN module loaded")
-        except:
-            print("DCGAN module not available")
+                dcgan_code = f.read()
+            dcgan_namespace = {}
+            exec(dcgan_code, dcgan_namespace)
+            DCGAN = dcgan_namespace['DCGAN']
+            DCGANConfig = dcgan_namespace['DCGANConfig']
+            print(f"DCGAN loaded successfully from {dcgan_path}")
+        except Exception as e:
+            print(f"Failed to load DCGAN: {e}")
+            DCGAN = None
+            DCGANConfig = None
         
+        # Load VanillaGAN module
         try:
             vanilla_path = "/usr/local/lib/python3.10/site-packages/nesy_factory/GANs/vanilla_gan.py"
             with open(vanilla_path, 'r') as f:
-                exec(f.read(), globals())
-            print("VanillaGAN module loaded")
-        except:
-            print("VanillaGAN module not available")
+                vanilla_code = f.read()
+            vanilla_namespace = {}
+            exec(vanilla_code, vanilla_namespace)
+            VanillaGAN = vanilla_namespace['VanillaGAN']
+            VanillaGANConfig = vanilla_namespace['VanillaGANConfig']
+            print(f"VanillaGAN loaded successfully from {vanilla_path}")
+        except Exception as e:
+            print(f"Failed to load VanillaGAN: {e}")
+            VanillaGAN = None
+            VanillaGANConfig = None
         
-        # Load model data
+        if not DCGAN and not VanillaGAN:
+            raise ImportError("Failed to load any GAN modules")
+        
+        # =============================================================================
+        # LOAD AND RECONSTRUCT MODEL
+        # =============================================================================
+        
+        print("\\n[3/4] LOADING INITIALIZED MODEL")
+        print("-"*50)
+        
         with open(args.initialized_model, 'rb') as f:
             model_data = pickle.load(f)
         
         print(f"Model data type: {type(model_data)}")
         
-        # Initialize device
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         print(f"Using device: {device}")
         print(f"  CUDA Available: {torch.cuda.is_available()}")
         
-        # Handle model data
         gan = None
+        
         if isinstance(model_data, dict):
             print("Reconstructing from state dictionary")
-            saved_model_type = model_data.get('model_type', gan_type)
             
-            if saved_model_type == 'dcgan' and 'DCGAN' in globals():
-                print("Creating DCGAN")
-                config_dict = model_data.get('config', {})
+            saved_model_type = model_data.get('model_type', gan_type)
+            config_dict = model_data.get('config', {})
+            
+            print(f"  Model Type from saved data: {saved_model_type}")
+            
+            if saved_model_type == 'dcgan' and DCGAN is not None:
+                print("Creating DCGAN configuration")
                 config = DCGANConfig(**config_dict)
+                print("Instantiating DCGAN model")
                 gan = DCGAN(config)
                 
-                if model_data.get('generator_state'):
+                if model_data.get('generator_state') is not None:
+                    print("Loading generator state dict")
                     gan.generator.load_state_dict(model_data['generator_state'])
-                if model_data.get('discriminator_state'):
+                if model_data.get('discriminator_state') is not None:
+                    print("Loading discriminator state dict")
                     gan.discriminator.load_state_dict(model_data['discriminator_state'])
                     
-            elif saved_model_type in ['vanilla_gan', 'vanilla'] and 'VanillaGAN' in globals():
-                print("Creating VanillaGAN")
-                config_dict = model_data.get('config', {})
+            elif saved_model_type in ['vanilla_gan', 'vanilla'] and VanillaGAN is not None:
+                print("Creating VanillaGAN configuration")
                 config = VanillaGANConfig(**config_dict)
+                print("Instantiating VanillaGAN model")
                 gan = VanillaGAN(config)
                 
-                if model_data.get('generator_state'):
+                if model_data.get('generator_state') is not None:
+                    print("Loading generator state dict")
                     gan.generator.load_state_dict(model_data['generator_state'])
-                if model_data.get('discriminator_state'):
+                if model_data.get('discriminator_state') is not None:
+                    print("Loading discriminator state dict")
                     gan.discriminator.load_state_dict(model_data['discriminator_state'])
             else:
-                gan = model_data
+                raise ValueError(f"Unknown model type: {saved_model_type}")
+            
+            print(f"Reconstructed {saved_model_type} from state dictionary")
         else:
             gan = model_data
+            print(f"Direct model loaded: {type(gan).__name__}")
         
         if gan is None:
             raise ValueError("Failed to load GAN model")
         
-        # Move to device
         gan.generator.to(device)
         gan.discriminator.to(device)
-        print("Model loaded and moved to device")
+        print("Generator and discriminator moved to device")
         
         # =============================================================================
         # TRAINING LOOP
         # =============================================================================
         
-        print("\\n[3/3] STARTING TRAINING")
+        print("\\n[4/4] STARTING TRAINING")
         print("="*80)
-        print(f"Algorithm: {algorithm.upper()}")
-        print(f"GAN Type: {gan_type.upper()}")
-        print(f"Epochs: {epochs}")
-        print(f"Batch Size: {batch_size}")
+        print(f"ALGORITHM: {algorithm.upper()}")
+        print(f"GAN TYPE: {gan_type.upper()}")
+        print(f"EPOCHS: {epochs}")
+        print(f"BATCHES PER EPOCH: {len(dataloader)}")
         print("="*80)
         
-        # Initialize training history
         training_history = {
             'epochs_completed': 0,
             'losses_g': [],
@@ -332,6 +335,40 @@ implementation:
             'epoch_times': [],
             'batch_details': []
         }
+        
+        print("\\nALGORITHM-SPECIFIC PRE-TRAINING")
+        print("-"*50)
+        
+        if algorithm == 'forward_forward':
+            print("Starting Forward-Forward pre-training")
+            if hasattr(gan.trainer, 'train_forward_forward'):
+                ff_start = time.time()
+                ff_results = gan.trainer.train_forward_forward(dataloader, verbose=True)
+                ff_time = time.time() - ff_start
+                training_history['ff_pre_training'] = ff_results
+                training_history['ff_time'] = ff_time
+                print(f"Forward-Forward pre-training completed in {ff_time:.2f} seconds")
+            else:
+                print("Model trainer doesn't have train_forward_forward method")
+        
+        elif algorithm == 'cafo':
+            print("Starting CAFO pre-training")
+            if hasattr(gan.trainer, 'train_cafo'):
+                cafo_start = time.time()
+                cafo_results = gan.trainer.train_cafo(dataloader, verbose=True)
+                cafo_time = time.time() - cafo_start
+                training_history['cafo_pre_training'] = cafo_results
+                training_history['cafo_time'] = cafo_time
+                print(f"CAFO pre-training completed in {cafo_time:.2f} seconds")
+            else:
+                print("Model trainer doesn't have train_cafo method")
+        
+        elif algorithm == 'backprop':
+            print("Starting standard Backprop training")
+        
+        else:
+            print(f"Unknown algorithm: {algorithm}, defaulting to backprop")
+            algorithm = 'backprop'
         
         print("\\n" + "="*80)
         print("MAIN TRAINING STARTING")
@@ -359,7 +396,7 @@ implementation:
                 real_data = real_data.to(device)
                 current_batch_size = real_data.size(0)
                 
-                # Generate noise
+                # Generate noise based on GAN type
                 if gan_type == 'dcgan':
                     z = torch.randn(current_batch_size, latent_dim, 1, 1, device=device)
                 else:
@@ -419,7 +456,9 @@ implementation:
                     'd_loss': float(d_loss.item()),
                     'real_score': real_score,
                     'fake_score': fake_score,
-                    'batch_time': batch_time
+                    'batch_time': batch_time,
+                    'batch_size': current_batch_size,
+                    'timestamp': time.time()
                 })
             
             # End of epoch
@@ -455,21 +494,37 @@ implementation:
         
         training_history['epochs_completed'] = epochs
         total_training_time = sum(training_history['epoch_times'])
+        avg_epoch_time = np.mean(training_history['epoch_times'])
+        
+        print("\\n" + "="*80)
+        print("TRAINING COMPLETED - FINAL STATISTICS")
+        print("="*80)
+        print(f"Total Training Time: {total_training_time:.2f} seconds ({total_training_time/60:.2f} minutes)")
+        print(f"Average Epoch Time: {avg_epoch_time:.2f} seconds")
+        print(f"Final G Loss: {training_history['losses_g'][-1]:.6f}")
+        print(f"Final D Loss: {training_history['losses_d'][-1]:.6f}")
+        print(f"Final Real Score: {training_history['real_scores'][-1]:.4f}")
+        print(f"Final Fake Score: {training_history['fake_scores'][-1]:.4f}")
+        print(f"Total Batches Processed: {total_batches}")
+        print(f"Average Batch Time: {total_training_time/total_batches:.3f}s")
         
         # =============================================================================
         # GENERATE SAMPLES
         # =============================================================================
         
         print("\\n" + "="*80)
-        print("GENERATING SAMPLES")
+        print("GENERATING EVALUATION SAMPLES")
         print("="*80)
         
         generated_samples = []
-        num_samples = 16
+        num_samples = min(16, training_config.get('num_samples', 16))
+        print(f"Generating {num_samples} evaluation samples")
         
         gan.generator.eval()
         with torch.no_grad():
             for i in range(num_samples):
+                print(f"  Generating sample {i+1}/{num_samples}")
+                
                 if gan_type == 'dcgan':
                     z = torch.randn(1, latent_dim, 1, 1, device=device)
                 else:
@@ -477,17 +532,22 @@ implementation:
                 
                 fake_img = gan.generator(z).cpu()
                 
-                # Convert to image
                 if gan_type == 'dcgan':
-                    if fake_img.shape[1] == 1:  # Grayscale
+                    if fake_img.shape[1] == 1:
                         img_np = (fake_img.squeeze(0).squeeze(0).numpy() + 1) / 2 * 255
                         img_pil = Image.fromarray(img_np.astype(np.uint8), mode='L')
-                    else:  # RGB
+                    else:
                         img_np = (fake_img.squeeze(0).permute(1, 2, 0).numpy() + 1) / 2 * 255
                         img_pil = Image.fromarray(img_np.astype(np.uint8), mode='RGB')
                 else:
-                    # VanillaGAN
-                    img_np = (fake_img.view(28, 28).numpy() + 1) / 2 * 255
+                    if len(fake_img.shape) == 2:
+                        flat_img = fake_img
+                    else:
+                        flat_img = fake_img.view(-1)
+                    
+                    img_size = int(math.sqrt(flat_img.shape[0]))
+                    img_np = flat_img.view(img_size, img_size).numpy()
+                    img_np = (img_np + 1) / 2 * 255
                     img_pil = Image.fromarray(img_np.astype(np.uint8), mode='L')
                 
                 img_bytes = io.BytesIO()
@@ -507,14 +567,9 @@ implementation:
         print(f"Generated {len(generated_samples)} samples")
         
         # =============================================================================
-        # SAVE RESULTS
+        # SAVE TRAINING METRICS
         # =============================================================================
         
-        print("\\n" + "="*80)
-        print("SAVING RESULTS")
-        print("="*80)
-        
-        # Create training metrics
         training_metrics = {
             'model_type': gan_type,
             'training_algorithm': algorithm,
@@ -530,41 +585,89 @@ implementation:
             'training_time': total_training_time,
             'samples_generated': len(generated_samples),
             'training_success': True,
-            'convergence_quality': 'EXCELLENT' if best_g_loss < 1.0 else 'GOOD' if best_g_loss < 2.0 else 'FAIR'
+            'algorithm_specific': {
+                'used_pre_training': algorithm in ['forward_forward', 'cafo'],
+                'pre_training_success': algorithm in training_history
+            },
+            'performance': {
+                'avg_epoch_time': avg_epoch_time,
+                'total_batches_processed': total_batches,
+                'avg_batch_time': total_training_time/total_batches if total_batches > 0 else 0,
+                'throughput': len(dataset) * epochs / total_training_time if total_training_time > 0 else 0
+            },
+            'convergence_info': {
+                'generator_converged': training_history['losses_g'][-1] < 2.0,
+                'discriminator_converged': 0.3 < training_history['losses_d'][-1] < 2.0,
+                'scores_balanced': (0.3 < training_history['real_scores'][-1] < 0.9) and (0.1 < training_history['fake_scores'][-1] < 0.7),
+                'training_stable': abs(training_history['real_scores'][-1] - training_history['fake_scores'][-1]) > 0.1
+            }
         }
         
-        # Save outputs
-        os.makedirs(os.path.dirname(args.trained_model), exist_ok=True)
-        with open(args.trained_model, 'wb') as f:
-            pickle.dump(gan, f)
-        print(f"Model saved: {args.trained_model}")
-        
-        with open(args.training_history, 'w') as f:
-            json.dump(training_history, f, indent=2)
-        print(f"Training history saved: {args.training_history}")
-        
-        with open(args.training_metrics, 'w') as f:
-            json.dump(training_metrics, f, indent=2)
-        print(f"Training metrics saved: {args.training_metrics}")
-        
-        with open(args.generated_samples, 'wb') as f:
-            pickle.dump(generated_samples, f)
-        print(f"Generated samples saved: {args.generated_samples}")
-        
         print("\\n" + "="*80)
-        print("TRAINING COMPLETED SUCCESSFULLY")
+        print("TRAINING METRICS SUMMARY")
         print("="*80)
-        print(f"Model Type: {gan_type}")
-        print(f"Algorithm: {algorithm}")
-        print(f"Epochs: {epochs}")
+        print(f"Model Type: {training_metrics['model_type']}")
+        print(f"Algorithm: {training_metrics['training_algorithm']}")
+        print(f"Epochs Completed: {training_metrics['epochs_completed']}")
         print(f"Final G Loss: {training_metrics['final_generator_loss']:.6f}")
         print(f"Final D Loss: {training_metrics['final_discriminator_loss']:.6f}")
-        print(f"Best G Loss: {training_metrics['best_generator_loss']:.6f}")
-        print(f"Best D Loss: {training_metrics['best_discriminator_loss']:.6f}")
-        print(f"Training Time: {total_training_time:.2f}s")
-        print(f"Convergence Quality: {training_metrics['convergence_quality']}")
-        print(f"Generated Samples: {len(generated_samples)}")
+        print(f"Average G Loss: {training_metrics['avg_generator_loss']:.6f}")
+        print(f"Average D Loss: {training_metrics['avg_discriminator_loss']:.6f}")
+        print(f"Training Time: {training_metrics['training_time']:.2f}s")
+        print(f"Samples Generated: {training_metrics['samples_generated']}")
+        print(f"Throughput: {training_metrics['performance']['throughput']:.1f} samples/second")
+        print(f"Average Batch Time: {training_metrics['performance']['avg_batch_time']:.3f}s")
+        
+        # =============================================================================
+        # SAVE OUTPUTS
+        # =============================================================================
+        
+        print("\\n" + "="*80)
+        print("SAVING OUTPUTS")
         print("="*80)
+        
+        os.makedirs(os.path.dirname(args.trained_model), exist_ok=True)
+        os.makedirs(os.path.dirname(args.training_history), exist_ok=True)
+        os.makedirs(os.path.dirname(args.training_metrics), exist_ok=True)
+        os.makedirs(os.path.dirname(args.generated_samples), exist_ok=True)
+        
+        print("Saving trained model")
+        with open(args.trained_model, 'wb') as f:
+            pickle.dump(gan, f)
+        print(f"Model saved to: {args.trained_model}")
+        
+        print("Saving training history")
+        with open(args.training_history, 'w') as f:
+            json.dump(training_history, f, indent=2)
+        print(f"Training history saved to: {args.training_history}")
+        
+        print("Saving training metrics")
+        with open(args.training_metrics, 'w') as f:
+            json.dump(training_metrics, f, indent=2)
+        print(f"Training metrics saved to: {args.training_metrics}")
+        
+        print("Saving generated samples")
+        with open(args.generated_samples, 'wb') as f:
+            pickle.dump(generated_samples, f)
+        print(f"Generated samples saved to: {args.generated_samples}")
+        
+        print("\\n" + "="*80)
+        print("GAN TRAINING COMPLETED SUCCESSFULLY")
+        print("="*80)
+        print(f"Algorithm: {algorithm}")
+        print(f"Model Type: {gan_type}")
+        print(f"Epochs Completed: {epochs}")
+        print(f"Final G Loss: {training_metrics['final_generator_loss']:.6f}")
+        print(f"Final D Loss: {training_metrics['final_discriminator_loss']:.6f}")
+        print(f"Training Time: {total_training_time:.2f}s ({total_training_time/60:.2f} min)")
+        print(f"Samples Generated: {len(generated_samples)}")
+        print(f"Total Batches Processed: {total_batches}")
+        print("\\nALL OUTPUTS SAVED SUCCESSFULLY:")
+        print(f"Trained Model: {args.trained_model}")
+        print(f"Training History: {args.training_history}")
+        print(f"Training Metrics: {args.training_metrics}")
+        print(f"Generated Samples: {args.generated_samples}")
+        print("\\nEND OF TRAINING")
 
     args:
       - --initialized_model
