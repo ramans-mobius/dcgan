@@ -1,5 +1,5 @@
-name: Build
-description: Builds GAN model using master config
+name: 2 Build
+description: Builds GAN model using master config, validates architecture, and auto-corrects if needed
 inputs:
   - name: gan_config_json
     type: String
@@ -86,16 +86,9 @@ implementation:
             generator_layers = model_config.get('generator_layers', [])
             discriminator_layers = model_config.get('discriminator_layers', [])
             
-            # If layers not in config, calculate them
-            if not generator_layers or not discriminator_layers:
-                print("\\nCalculating DCGAN architecture...")
-                generator_layers, discriminator_layers = calculate_dcgan_architecture(image_size, channels)
-                print(f"  Generator layers: {generator_layers}")
-                print(f"  Discriminator layers: {discriminator_layers}")
-            else:
-                print(f"\\nUsing layers from config:")
-                print(f"  Generator layers: {generator_layers}")
-                print(f"  Discriminator layers: {discriminator_layers}")
+            print(f"\\nUsing layers from config:")
+            print(f"  Generator layers: {generator_layers}")
+            print(f"  Discriminator layers: {discriminator_layers}")
                 
         except Exception as e:
             print(f"✗ Failed to parse JSON config: {e}")
@@ -166,11 +159,56 @@ implementation:
             
             return generator_layers, discriminator_layers
         
-        # Calculate architecture if not provided
-        if not generator_layers or not discriminator_layers:
-            generator_layers, discriminator_layers = calculate_dcgan_architecture(image_size, channels)
+        # Calculate what layers SHOULD be for the target image size
+        expected_gen_layers, expected_disc_layers = calculate_dcgan_architecture(image_size, channels)
         
-        model = None
+        print(f"\\nExpected architecture for {image_size}x{image_size}:")
+        print(f"  Generator layers: {expected_gen_layers}")
+        print(f"  Discriminator layers: {expected_disc_layers}")
+        
+        # Function to validate generator output size
+        def validate_generator_output(generator_layers, image_size, channels):
+            # DCGAN starts from 4x4 and doubles for each layer (except output)
+            start_size = 4
+            output_size = start_size
+            for i in range(len(generator_layers) - 1):  # Exclude output layer
+                output_size *= 2
+            return output_size
+        
+        # Check if current layers will produce correct output
+        if model_type == 'dcgan' and generator_layers:
+            calculated_size = validate_generator_output(generator_layers, image_size, channels)
+            print(f"\\n--- VALIDATING ARCHITECTURE ---")
+            print(f"Config generator layers: {generator_layers}")
+            print(f"Will produce: {calculated_size}x{calculated_size} output")
+            print(f"Expected: {image_size}x{image_size} output")
+            
+            if calculated_size != image_size:
+                print(f" ARCHITECTURE MISMATCH DETECTED!")
+                print(f"  Current layers produce {calculated_size}x{calculated_size}")
+                print(f"  But dataset expects {image_size}x{image_size}")
+                
+                # Auto-correct the layers
+                print(f"\\n--- AUTO-CORRECTING ARCHITECTURE ---")
+                print(f"Updating generator layers: {generator_layers} -> {expected_gen_layers}")
+                print(f"Updating discriminator layers: {discriminator_layers} -> {expected_disc_layers}")
+                
+                # Update the config with corrected layers
+                generator_layers = expected_gen_layers
+                discriminator_layers = expected_disc_layers
+                
+                # Update master config
+                gan_config['model']['generator_layers'] = generator_layers
+                gan_config['model']['discriminator_layers'] = discriminator_layers
+                gan_config['model']['architecture_corrected'] = True
+                gan_config['model']['original_generator_layers'] = model_config.get('generator_layers', [])
+                gan_config['model']['original_discriminator_layers'] = model_config.get('discriminator_layers', [])
+                gan_config['model']['correction_reason'] = f"Generator produced {calculated_size}x{calculated_size}, expected {image_size}x{image_size}"
+                
+                print(f"✓ Configuration auto-corrected!")
+            else:
+                print(f"✓ Architecture is correct for {image_size}x{image_size} output")
+                gan_config['model']['architecture_valid'] = True
         
         # Load the GAN module
         print("\\n" + "="*80)
@@ -193,8 +231,8 @@ implementation:
                 DCGANConfig = local_namespace['DCGANConfig']
                 print("✓ Successfully loaded DCGAN classes")
                 
-                # Create DCGAN config
-                print("\\n--- BUILDING DCGAN CONFIGURATION ---")
+                # Create DCGAN config with AUTO-CORRECTED layers
+                print("\\n--- BUILDING DCGAN CONFIGURATION (with corrected layers) ---")
                 print(f"  Image size: {image_size}")
                 print(f"  Channels: {channels}")
                 print(f"  Latent dim: {latent_dim}")
@@ -258,47 +296,30 @@ implementation:
                     expected_shape = (2, channels, image_size, image_size)
                     
                     if actual_shape == expected_shape:
-                        print(" Generator output matches expected shape!")
+                        print("✓ Generator output matches expected shape!")
+                        gan_config['model']['generator_output_validated'] = True
                     else:
-                        print(f" GENERATOR OUTPUT MISMATCH!")
+                        print(f"✗ GENERATOR OUTPUT MISMATCH!")
                         print(f"   Expected: {expected_shape}")
                         print(f"   Got: {actual_shape}")
-                        
-                        # Diagnose the issue
-                        print(f"\\n--- DIAGNOSIS ---")
-                        print(f"Image size: {image_size}")
-                        print(f"Generator layers: {generator_layers}")
-                        print(f"Number of layers: {len(generator_layers)}")
-                        
-                        # Calculate what output size these layers would produce
-                        start_size = 4
-                        output_size = start_size
-                        for i in range(len(generator_layers) - 1):  # Exclude output layer
-                            output_size *= 2
-                        
-                        print(f"With {len(generator_layers)} layers, starting from {start_size}x{start_size}:")
-                        print(f"  Would produce: {output_size}x{output_size}")
-                        
-                        if output_size != image_size:
-                            # Calculate needed layers
-                            needed_layers = []
-                            current_channels = 512
-                            current_size = 4
-                            
-                            while current_size < image_size:
-                                needed_layers.append(current_channels)
-                                current_size *= 2
-                                current_channels //= 2
-                            
-                            needed_layers.append(channels)
-                            print(f"\\nFor {image_size}x{image_size}, need {len(needed_layers)} layers:")
-                            print(f"  Suggested generator layers: {needed_layers}")
+                        gan_config['model']['generator_output_validated'] = False
                 
                 if hasattr(model, 'discriminator'):
                     with torch.no_grad():
                         d_output = model.discriminator(sample_output)
                         print(f"Discriminator output shape: {d_output.shape}")
-                        print("✓ Discriminator test passed")
+                        
+                        # Validate discriminator can accept generator output
+                        try:
+                            # Also test with real image shape
+                            real_test = torch.randn(2, channels, image_size, image_size)
+                            d_real_output = model.discriminator(real_test)
+                            print(f"Discriminator real test output shape: {d_real_output.shape}")
+                            print("✓ Discriminator can process both generator output and real images")
+                            gan_config['model']['discriminator_input_validated'] = True
+                        except Exception as e:
+                            print(f"✗ Discriminator input validation failed: {e}")
+                            gan_config['model']['discriminator_input_validated'] = False
                 
             elif model_type == 'vanilla_gan':
                 print("\\nLoading VanillaGAN...")
@@ -357,9 +378,17 @@ implementation:
                     print(f"Expected flattened size: {input_dim}")
                     
                     if sample_output.shape[1] == input_dim:
-                        print(" Generator output matches expected size!")
+                        print("✓ Generator output matches expected size!")
+                        gan_config['model']['generator_output_validated'] = True
                     else:
-                        print(f" Generator output mismatch!")
+                        print(f"✗ Generator output mismatch!")
+                        gan_config['model']['generator_output_validated'] = False
+                
+                if hasattr(model, 'discriminator'):
+                    with torch.no_grad():
+                        d_output = model.discriminator(sample_output)
+                        print(f"Discriminator output shape: {d_output.shape}")
+                        gan_config['model']['discriminator_input_validated'] = True
                 
             else:
                 print(f"✗ Unknown model type: {model_type}")
@@ -389,6 +418,8 @@ implementation:
             'generator_layers_used': generator_layers,
             'discriminator_layers_used': discriminator_layers,
             'build_device': 'cuda' if torch.cuda.is_available() else 'cpu',
+            'generator_output_size': sample_output.shape if 'sample_output' in locals() else None,
+            'discriminator_input_size': (channels, image_size, image_size) if model_type == 'dcgan' else input_dim,
         })
         
         # Ensure the config has the layers for Train brick to use
@@ -411,7 +442,9 @@ implementation:
             'pytorch_version': torch.__version__,
             'cuda_available': torch.cuda.is_available(),
             'build_timestamp': time.strftime('%Y-%m-%dT%H:%M:%SZ'),
-            'architecture_validated': True
+            'architecture_validated': gan_config['model'].get('generator_output_validated', False),
+            'architecture_corrected': gan_config['model'].get('architecture_corrected', False),
+            'original_layers_used': gan_config['model'].get('original_generator_layers') is not None,
         }
         
         # Save model state
@@ -432,13 +465,14 @@ implementation:
             'image_size': image_size,
             'channels': channels,
             'latent_dim': latent_dim,
+            'architecture_corrected': gan_config['model'].get('architecture_corrected', False),
         }
         
         with open(args.model_out, 'wb') as f:
             pickle.dump(model_state, f, protocol=pickle.HIGHEST_PROTOCOL)
         print(f"✓ Model state saved to: {args.model_out}")
         
-        # Save updated config
+        # Save updated config (with auto-corrected layers if needed)
         updated_config_json = json.dumps(gan_config, indent=2)
         updated_config_base64 = base64.b64encode(updated_config_json.encode('utf-8')).decode('utf-8')
         
@@ -458,10 +492,16 @@ implementation:
         print(f"Model type: {model_type}")
         print(f"Image size: {image_size}x{image_size}")
         print(f"Channels: {channels}")
-        print(f"Generator layers: {generator_layers}")
-        print(f"Discriminator layers: {discriminator_layers}")
-        print(f"Generator output validated: ✓")
-        print("\\nNEXT: Train brick will use the exact same architecture")
+        print(f"Generator layers used: {generator_layers}")
+        print(f"Discriminator layers used: {discriminator_layers}")
+        
+        if gan_config['model'].get('architecture_corrected', False):
+            print(f"\\n ARCHITECTURE WAS AUTO-CORRECTED")
+            print(f"  Original generator layers: {gan_config['model'].get('original_generator_layers', [])}")
+            print(f"  Original discriminator layers: {gan_config['model'].get('original_discriminator_layers', [])}")
+            print(f"  Reason: {gan_config['model'].get('correction_reason', 'N/A')}")
+        
+        print(f"\\nNEXT: Train brick will use the corrected architecture from this config")
 
     args:
       - --gan_config_json
