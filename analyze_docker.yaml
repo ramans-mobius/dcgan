@@ -1,4 +1,4 @@
-name: Container Diagnostic
+name: 2 Container Diagnostic
 description: Comprehensive diagnostic for nesy-factory v36-gpu container environment
 inputs:
   - name: dummy_input
@@ -565,7 +565,7 @@ implementation:
         print(f"✓ nesy_factory structure saved to: {args.nesy_structure}")
         
         # Generate human-readable summary
-        summary_text = f"""
+        summary_text = f'''
         ========================================================
         CONTAINER DIAGNOSTIC SUMMARY
         ========================================================
@@ -595,19 +595,19 @@ implementation:
         Warnings: {summary['warnings']}
         
         ISSUES DETECTED:
-        """
+        '''
         
         for issue in diagnostic_data["issues"]:
             summary_text += f"  [{issue['severity']}] {issue['category']}: {issue['message']}\\n"
         
-        summary_text += """
+        summary_text += '''
         RECOMMENDATIONS:
-        """
+        '''
         
         for i, rec in enumerate(recommendations, 1):
             summary_text += f"  {i}. [{rec['priority']}] {rec['action']}: {rec['details']}\\n"
         
-        summary_text += """
+        summary_text += '''
         NEXT STEPS:
         -----------
         1. Review critical issues above
@@ -615,7 +615,7 @@ implementation:
         3. Run diagnostic again after fixes
         
         ========================================================
-        """
+        '''
         
         with open(args.diagnostic_summary, 'w') as f:
             f.write(summary_text)
