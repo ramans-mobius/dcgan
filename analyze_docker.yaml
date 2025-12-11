@@ -4,7 +4,6 @@ inputs:
   - name: dummy_input
     type: String
     description: Dummy input for testing container functionality
-    default: "test_diagnostic_001"
 outputs:
   - name: diagnostic_report
     type: String
