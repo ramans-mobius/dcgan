@@ -1,4 +1,4 @@
-name: 2 Train GAN (Backprop/CAFO/Forward-Forward)
+name: gpu Train GAN (Backprop/CAFO/Forward-Forward)
 description: Trains GAN models (DCGAN/Vanilla GAN) with support for Backprop, CAFO, and Forward-Forward algorithms
 inputs:
   - name: initialized_model
@@ -22,7 +22,7 @@ outputs:
 
 implementation:
   container:
-    image: gurpreetgandhi/nesy-factory:v35
+    image: gurpreetgandhi/nesy-factory:v36gpu
     command:
       - sh
       - -c
