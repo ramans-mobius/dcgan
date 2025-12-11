@@ -18,7 +18,7 @@ outputs:
 
 implementation:
   container:
-    image: gurpreetgandhi/nesy-factory:v36gpu
+    image: gurpreetgandhi/nesy-factory:v36-gpu
     command:
       - sh
       - -c
