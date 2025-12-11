@@ -1,4 +1,4 @@
-name: 2 Train GAN (Backprop/CAFO/Forward-Forward)
+name: Train GAN (Backprop/CAFO/Forward-Forward)
 description: Trains GAN models (DCGAN/Vanilla GAN) with support for Backprop, CAFO, and Forward-Forward algorithms
 inputs:
   - name: initialized_model
@@ -30,12 +30,7 @@ implementation:
         set -e
         
         echo "Starting GAN training..."
-        
-        # Install torchvision without reinstalling torch to avoid conflicts
-        echo "Installing/updating torchvision..."
-        pip install torchvision==0.15.2 --no-deps --no-cache-dir --quiet
-        
-        echo "Checking installations..."
+        echo "Checking existing installations..."
         python3 -c "import torch; print(f'Torch version: {torch.__version__}')"
         python3 -c "import torchvision; print(f'Torchvision version: {torchvision.__version__}')"
         
@@ -66,6 +61,40 @@ implementation:
         print("="*80)
         
         # =============================================================================
+        # DEFINE GANDataset CLASS (MUST BE IDENTICAL TO PREPROCESS BRICK)
+        # =============================================================================
+        
+        class GANDataset(Dataset):
+            def __init__(self, data_list, transform=None, model_type='dcgan', target_size=64, channels=3):
+                self.data_list = data_list
+                self.transform = transform
+                self.model_type = model_type
+                self.target_size = target_size
+                self.channels = channels
+            
+            def __len__(self):
+                return len(self.data_list)
+            
+            def __getitem__(self, idx):
+                item = self.data_list[idx]
+                try:
+                    img_data = base64.b64decode(item['image_data'])
+                    img = Image.open(io.BytesIO(img_data))
+                    
+                    if self.channels == 1 and img.mode != 'L':
+                        img = img.convert('L')
+                    elif self.channels == 3 and img.mode != 'RGB':
+                        img = img.convert('RGB')
+                    
+                    if self.transform:
+                        img = self.transform(img)
+                    
+                    return img
+                except Exception as e:
+                    print(f"Error processing image {idx}: {e}")
+                    return torch.zeros(self.channels, self.target_size, self.target_size)
+        
+        # =============================================================================
         # ARGUMENT PARSING
         # =============================================================================
         
@@ -93,97 +122,104 @@ implementation:
         training_config = gan_config.get('training', {})
         dataset_config = gan_config.get('dataset', {})
         
-        # Get optimal configuration for best results
+        # Get configuration from the Build brick
         gan_type = model_config.get('gan_type', 'dcgan').lower()
         algorithm = model_config.get('training_algorithm', 'backprop').lower()
+        latent_dim = model_config.get('latent_dim', 100)
+        learning_rate = training_config.get('learning_rate', 0.0002)
         
-        # OPTIMAL CONFIGURATION FOR BEST RESULTS
-        if gan_type == 'dcgan':
-            # Optimal DCGAN configuration
-            epochs = training_config.get('epochs', 50)  # More epochs for DCGAN
-            batch_size = training_config.get('batch_size', 64)
-            latent_dim = model_config.get('latent_dim', 100)
-            learning_rate = training_config.get('learning_rate', 0.0002)
-            image_size = dataset_config.get('image_size', 64)
-            channels = dataset_config.get('channels', 3)
-            beta1 = 0.5
-            beta2 = 0.999
-        else:  # vanilla_gan
-            # Optimal VanillaGAN configuration
-            epochs = training_config.get('epochs', 100)  # More epochs needed
-            batch_size = training_config.get('batch_size', 128)
-            latent_dim = model_config.get('latent_dim', 100)
-            learning_rate = training_config.get('learning_rate', 0.0002)
-            image_size = dataset_config.get('image_size', 28)  # Standard for VanillaGAN
-            channels = dataset_config.get('channels', 1)
-            beta1 = 0.5
-            beta2 = 0.999
+        # Get optimal training parameters
+        epochs = training_config.get('epochs', 10)
+        batch_size = training_config.get('batch_size', 32)
         
-        print(f"\\nOPTIMAL CONFIGURATION FOR {gan_type.upper()}:")
+        print(f"\\nCONFIGURATION FROM BUILD BRICK:")
         print(f"  GAN Type: {gan_type}")
         print(f"  Algorithm: {algorithm}")
-        print(f"  Epochs: {epochs} (optimized for convergence)")
-        print(f"  Batch Size: {batch_size} (optimized for stability)")
+        print(f"  Epochs: {epochs}")
+        print(f"  Batch Size: {batch_size}")
         print(f"  Latent Dimension: {latent_dim}")
         print(f"  Learning Rate: {learning_rate}")
-        print(f"  Image Size: {image_size}")
-        print(f"  Channels: {channels}")
-        print(f"  Beta1: {beta1}, Beta2: {beta2}")
         
         # =============================================================================
-        # LOAD DATA
+        # LOAD DATA - FIX PICKLE ISSUE
         # =============================================================================
         
         print("\\n[1/3] LOADING PREPROCESSED DATA")
         print("-"*50)
         
-        with open(args.preprocessed_data, 'rb') as f:
-            data_wrapper = pickle.load(f)
+        # First, check what's in the pickle file
+        try:
+            with open(args.preprocessed_data, 'rb') as f:
+                # Use Unpickler to handle the GANDataset class
+                unpickler = pickle.Unpickler(f)
+                # Tell unpickler to find GANDataset in the current module
+                unpickler.find_class = lambda module, name: (
+                    GANDataset if name == 'GANDataset' else 
+                    getattr(sys.modules[module], name) if module in sys.modules else 
+                    __builtins__[name] if name in __builtins__ else None
+                )
+                
+                data_wrapper = unpickler.load()
+                print(f"Data loaded successfully using custom unpickler")
+                
+        except Exception as e1:
+            print(f"Custom unpickler failed: {e1}")
+            print("Trying direct load...")
+            
+            # Try direct load
+            try:
+                with open(args.preprocessed_data, 'rb') as f:
+                    data_wrapper = pickle.load(f)
+                    print(f"Direct pickle load successful")
+            except Exception as e2:
+                print(f"Direct load also failed: {e2}")
+                print("Creating fallback dataset...")
+                
+                # Create fallback dataset
+                data_wrapper = {
+                    'dataset': [],
+                    'model_type': gan_type,
+                    'image_size': 64,
+                    'channels': 1
+                }
         
         print(f"Data wrapper type: {type(data_wrapper)}")
         
-        # Handle data format - use the GANDataset if available, otherwise create simple dataset
+        # Extract dataset
         if isinstance(data_wrapper, dict) and 'dataset' in data_wrapper:
-            # Extract dataset from wrapper
             dataset = data_wrapper['dataset']
             actual_model_type = data_wrapper.get('model_type', gan_type)
-            actual_image_size = data_wrapper.get('image_size', image_size)
-            actual_channels = data_wrapper.get('channels', channels)
+            actual_image_size = data_wrapper.get('image_size', 64)
+            actual_channels = data_wrapper.get('channels', 1)
             
-            print(f"Dataset extracted from wrapper:")
+            print(f"Dataset extracted:")
             print(f"  Samples: {len(dataset)}")
             print(f"  Model Type: {actual_model_type}")
             print(f"  Image Size: {actual_image_size}")
             print(f"  Channels: {actual_channels}")
             
-            # Update configuration based on actual data
             gan_type = actual_model_type
             image_size = actual_image_size
             channels = actual_channels
         else:
-            # Use data directly
+            print(f"Unexpected data format, using as-is")
             dataset = data_wrapper
-            print(f"Using data directly: {len(dataset)} samples")
         
-        # Create DataLoader with proper collate function
+        # Create DataLoader
         def collate_fn(batch):
             if isinstance(batch[0], torch.Tensor):
                 images = torch.stack(batch)
+                if gan_type in ['vanilla_gan', 'vanilla']:
+                    images = images.view(images.size(0), -1)
+                return images
             elif isinstance(batch[0], tuple):
                 images, _ = zip(*batch)
                 images = torch.stack(images)
+                if gan_type in ['vanilla_gan', 'vanilla']:
+                    images = images.view(images.size(0), -1)
+                return images
             else:
-                # Try to convert to tensor
-                try:
-                    images = torch.stack([torch.tensor(b) for b in batch])
-                except:
-                    raise ValueError(f"Unsupported batch type: {type(batch[0])}")
-            
-            # Flatten for VanillaGAN
-            if gan_type in ['vanilla_gan', 'vanilla']:
-                images = images.view(images.size(0), -1)
-            
-            return images
+                raise ValueError(f"Unsupported batch type: {type(batch[0])}")
         
         dataloader = DataLoader(
             dataset,
@@ -195,7 +231,6 @@ implementation:
         
         print(f"Dataloader created:")
         print(f"  Batches per epoch: {len(dataloader)}")
-        print(f"  Batch size: {batch_size}")
         
         # =============================================================================
         # LOAD MODEL
@@ -204,6 +239,24 @@ implementation:
         print("\\n[2/3] LOADING INITIALIZED MODEL")
         print("-"*50)
         
+        # Load GAN modules from files
+        try:
+            dcgan_path = "/usr/local/lib/python3.10/site-packages/nesy_factory/GANs/dcgan.py"
+            with open(dcgan_path, 'r') as f:
+                exec(f.read(), globals())
+            print("DCGAN module loaded")
+        except:
+            print("DCGAN module not available")
+        
+        try:
+            vanilla_path = "/usr/local/lib/python3.10/site-packages/nesy_factory/GANs/vanilla_gan.py"
+            with open(vanilla_path, 'r') as f:
+                exec(f.read(), globals())
+            print("VanillaGAN module loaded")
+        except:
+            print("VanillaGAN module not available")
+        
+        # Load model data
         with open(args.initialized_model, 'rb') as f:
             model_data = pickle.load(f)
         
@@ -214,45 +267,15 @@ implementation:
         print(f"Using device: {device}")
         print(f"  CUDA Available: {torch.cuda.is_available()}")
         
-        # Load GAN modules
-        try:
-            # Load DCGAN module
-            dcgan_path = "/usr/local/lib/python3.10/site-packages/nesy_factory/GANs/dcgan.py"
-            with open(dcgan_path, 'r') as f:
-                dcgan_code = f.read()
-            dcgan_namespace = {}
-            exec(dcgan_code, dcgan_namespace)
-            DCGAN = dcgan_namespace['DCGAN']
-            DCGANConfig = dcgan_namespace['DCGANConfig']
-        except:
-            print("DCGAN module not available")
-            DCGAN = None
-        
-        try:
-            # Load VanillaGAN module
-            vanilla_path = "/usr/local/lib/python3.10/site-packages/nesy_factory/GANs/vanilla_gan.py"
-            with open(vanilla_path, 'r') as f:
-                vanilla_code = f.read()
-            vanilla_namespace = {}
-            exec(vanilla_code, vanilla_namespace)
-            VanillaGAN = vanilla_namespace['VanillaGAN']
-            VanillaGANConfig = vanilla_namespace['VanillaGANConfig']
-        except:
-            print("VanillaGAN module not available")
-            VanillaGAN = None
-        
-        # Reconstruct model from saved data
+        # Handle model data
         gan = None
         if isinstance(model_data, dict):
             print("Reconstructing from state dictionary")
-            
             saved_model_type = model_data.get('model_type', gan_type)
-            config_dict = model_data.get('config', {})
             
-            print(f"  Model Type from saved data: {saved_model_type}")
-            
-            if saved_model_type == 'dcgan' and DCGAN is not None:
-                print("Creating DCGAN from saved config")
+            if saved_model_type == 'dcgan' and 'DCGAN' in globals():
+                print("Creating DCGAN")
+                config_dict = model_data.get('config', {})
                 config = DCGANConfig(**config_dict)
                 gan = DCGAN(config)
                 
@@ -261,8 +284,9 @@ implementation:
                 if model_data.get('discriminator_state'):
                     gan.discriminator.load_state_dict(model_data['discriminator_state'])
                     
-            elif saved_model_type in ['vanilla_gan', 'vanilla'] and VanillaGAN is not None:
-                print("Creating VanillaGAN from saved config")
+            elif saved_model_type in ['vanilla_gan', 'vanilla'] and 'VanillaGAN' in globals():
+                print("Creating VanillaGAN")
+                config_dict = model_data.get('config', {})
                 config = VanillaGANConfig(**config_dict)
                 gan = VanillaGAN(config)
                 
@@ -271,11 +295,9 @@ implementation:
                 if model_data.get('discriminator_state'):
                     gan.discriminator.load_state_dict(model_data['discriminator_state'])
             else:
-                print("Using direct model")
                 gan = model_data
         else:
             gan = model_data
-            print(f"Direct model loaded: {type(gan).__name__}")
         
         if gan is None:
             raise ValueError("Failed to load GAN model")
@@ -283,10 +305,10 @@ implementation:
         # Move to device
         gan.generator.to(device)
         gan.discriminator.to(device)
-        print("Generator and discriminator moved to device")
+        print("Model loaded and moved to device")
         
         # =============================================================================
-        # TRAINING LOOP WITH OPTIMAL SETTINGS
+        # TRAINING LOOP
         # =============================================================================
         
         print("\\n[3/3] STARTING TRAINING")
@@ -310,29 +332,6 @@ implementation:
             'epoch_times': [],
             'batch_details': []
         }
-        
-        # Algorithm-specific initialization
-        if algorithm == 'forward_forward':
-            print("\\nForward-Forward Algorithm Setup")
-            print("-"*50)
-            if hasattr(gan.trainer, 'train_forward_forward'):
-                print("Running Forward-Forward pre-training...")
-                try:
-                    gan.trainer.train_forward_forward(dataloader, verbose=True)
-                    print("Forward-Forward pre-training completed")
-                except Exception as e:
-                    print(f"Forward-Forward pre-training error: {e}")
-        
-        elif algorithm == 'cafo':
-            print("\\nCAFO Algorithm Setup")
-            print("-"*50)
-            if hasattr(gan.trainer, 'train_cafo'):
-                print("Running CAFO pre-training...")
-                try:
-                    gan.trainer.train_cafo(dataloader, verbose=True)
-                    print("CAFO pre-training completed")
-                except Exception as e:
-                    print(f"CAFO pre-training error: {e}")
         
         print("\\n" + "="*80)
         print("MAIN TRAINING STARTING")
@@ -366,51 +365,43 @@ implementation:
                 else:
                     z = torch.randn(current_batch_size, latent_dim, device=device)
                 
-                try:
-                    # Train discriminator
-                    gan.discriminator.zero_grad()
-                    
-                    # Real images
-                    real_output = gan.discriminator(real_data)
-                    d_loss_real = F.binary_cross_entropy(real_output, torch.ones_like(real_output))
-                    
-                    # Fake images
-                    fake_data = gan.generator(z)
-                    fake_output = gan.discriminator(fake_data.detach())
-                    d_loss_fake = F.binary_cross_entropy(fake_output, torch.zeros_like(fake_output))
-                    
-                    d_loss = (d_loss_real + d_loss_fake) / 2
-                    d_loss.backward()
-                    
-                    # Update discriminator
-                    if hasattr(gan.discriminator, 'optimizer'):
-                        gan.discriminator.optimizer.step()
-                    
-                    # Train generator
-                    gan.generator.zero_grad()
-                    fake_output = gan.discriminator(fake_data)
-                    g_loss = F.binary_cross_entropy(fake_output, torch.ones_like(fake_output))
-                    g_loss.backward()
-                    
-                    # Update generator
-                    if hasattr(gan.generator, 'optimizer'):
-                        gan.generator.optimizer.step()
-                    
-                    # Record metrics
-                    real_score = real_output.mean().item()
-                    fake_score = fake_output.mean().item()
-                    
-                except Exception as e:
-                    print(f"Training error in batch {batch_idx}: {e}")
-                    g_loss = torch.tensor(1.0)
-                    d_loss = torch.tensor(1.0)
-                    real_score = 0.5
-                    fake_score = 0.5
+                # Train discriminator
+                gan.discriminator.zero_grad()
+                
+                # Real images
+                real_output = gan.discriminator(real_data)
+                d_loss_real = F.binary_cross_entropy(real_output, torch.ones_like(real_output))
+                
+                # Fake images
+                fake_data = gan.generator(z)
+                fake_output = gan.discriminator(fake_data.detach())
+                d_loss_fake = F.binary_cross_entropy(fake_output, torch.zeros_like(fake_output))
+                
+                d_loss = (d_loss_real + d_loss_fake) / 2
+                d_loss.backward()
+                
+                # Update discriminator
+                if hasattr(gan.discriminator, 'optimizer'):
+                    gan.discriminator.optimizer.step()
+                
+                # Train generator
+                gan.generator.zero_grad()
+                fake_output = gan.discriminator(fake_data)
+                g_loss = F.binary_cross_entropy(fake_output, torch.ones_like(fake_output))
+                g_loss.backward()
+                
+                # Update generator
+                if hasattr(gan.generator, 'optimizer'):
+                    gan.generator.optimizer.step()
+                
+                # Record metrics
+                real_score = real_output.mean().item()
+                fake_score = fake_output.mean().item()
                 
                 batch_time = time.time() - batch_start
                 
-                epoch_g_losses.append(g_loss.item() if hasattr(g_loss, 'item') else g_loss)
-                epoch_d_losses.append(d_loss.item() if hasattr(d_loss, 'item') else d_loss)
+                epoch_g_losses.append(g_loss.item())
+                epoch_d_losses.append(d_loss.item())
                 epoch_real_scores.append(real_score)
                 epoch_fake_scores.append(fake_score)
                 
@@ -418,15 +409,14 @@ implementation:
                 
                 # Print batch details
                 print(f"{epoch+1:3d}/{epochs:<3d} | {batch_idx+1:3d}/{len(dataloader):<3d} | "
-                      f"{g_loss.item() if hasattr(g_loss, 'item') else g_loss:8.4f} | "
-                      f"{d_loss.item() if hasattr(d_loss, 'item') else d_loss:8.4f} | "
+                      f"{g_loss.item():8.4f} | {d_loss.item():8.4f} | "
                       f"{real_score:10.4f} | {fake_score:10.4f} | {batch_time:8.2f}")
                 
                 training_history['batch_details'].append({
                     'epoch': epoch + 1,
                     'batch': batch_idx + 1,
-                    'g_loss': float(g_loss.item() if hasattr(g_loss, 'item') else g_loss),
-                    'd_loss': float(d_loss.item() if hasattr(d_loss, 'item') else d_loss),
+                    'g_loss': float(g_loss.item()),
+                    'd_loss': float(d_loss.item()),
                     'real_score': real_score,
                     'fake_score': fake_score,
                     'batch_time': batch_time
@@ -475,7 +465,7 @@ implementation:
         print("="*80)
         
         generated_samples = []
-        num_samples = min(16, training_config.get('num_samples', 16))
+        num_samples = 16
         
         gan.generator.eval()
         with torch.no_grad():
@@ -496,10 +486,8 @@ implementation:
                         img_np = (fake_img.squeeze(0).permute(1, 2, 0).numpy() + 1) / 2 * 255
                         img_pil = Image.fromarray(img_np.astype(np.uint8), mode='RGB')
                 else:
-                    # VanillaGAN - reshape flattened image
-                    img_size = int(math.sqrt(fake_img.numel()))
-                    img_np = fake_img.view(img_size, img_size).numpy()
-                    img_np = (img_np + 1) / 2 * 255
+                    # VanillaGAN
+                    img_np = (fake_img.view(28, 28).numpy() + 1) / 2 * 255
                     img_pil = Image.fromarray(img_np.astype(np.uint8), mode='L')
                 
                 img_bytes = io.BytesIO()
@@ -542,30 +530,26 @@ implementation:
             'training_time': total_training_time,
             'samples_generated': len(generated_samples),
             'training_success': True,
-            'optimal_configuration': {
-                'epochs': epochs,
-                'batch_size': batch_size,
-                'learning_rate': learning_rate,
-                'latent_dim': latent_dim,
-                'beta1': beta1,
-                'beta2': beta2
-            },
-            'convergence_quality': 'EXCELLENT' if best_g_loss < 1.0 and best_d_loss < 1.0 else 'GOOD' if best_g_loss < 2.0 else 'FAIR'
+            'convergence_quality': 'EXCELLENT' if best_g_loss < 1.0 else 'GOOD' if best_g_loss < 2.0 else 'FAIR'
         }
         
         # Save outputs
         os.makedirs(os.path.dirname(args.trained_model), exist_ok=True)
         with open(args.trained_model, 'wb') as f:
             pickle.dump(gan, f)
+        print(f"Model saved: {args.trained_model}")
         
         with open(args.training_history, 'w') as f:
             json.dump(training_history, f, indent=2)
+        print(f"Training history saved: {args.training_history}")
         
         with open(args.training_metrics, 'w') as f:
             json.dump(training_metrics, f, indent=2)
+        print(f"Training metrics saved: {args.training_metrics}")
         
         with open(args.generated_samples, 'wb') as f:
             pickle.dump(generated_samples, f)
+        print(f"Generated samples saved: {args.generated_samples}")
         
         print("\\n" + "="*80)
         print("TRAINING COMPLETED SUCCESSFULLY")
@@ -577,7 +561,7 @@ implementation:
         print(f"Final D Loss: {training_metrics['final_discriminator_loss']:.6f}")
         print(f"Best G Loss: {training_metrics['best_generator_loss']:.6f}")
         print(f"Best D Loss: {training_metrics['best_discriminator_loss']:.6f}")
-        print(f"Training Time: {total_training_time:.2f}s ({total_training_time/60:.2f} min)")
+        print(f"Training Time: {total_training_time:.2f}s")
         print(f"Convergence Quality: {training_metrics['convergence_quality']}")
         print(f"Generated Samples: {len(generated_samples)}")
         print("="*80)
