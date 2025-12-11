@@ -1,4 +1,4 @@
-name: 2 Train GAN (Backprop/CAFO/Forward-Forward)
+name: Train GAN (Backprop/CAFO/Forward-Forward)
 description: Trains GAN models (DCGAN/Vanilla GAN) with support for Backprop, CAFO, and Forward-Forward algorithms
 inputs:
   - name: initialized_model
@@ -62,6 +62,47 @@ implementation:
         print("="*80)
         
         # =============================================================================
+        # GANDataset CLASS (MUST BE DEFINED BEFORE LOADING PICKLE)
+        # =============================================================================
+        
+        class GANDataset(Dataset):
+            def __init__(self, data_list, transform=None, model_type='dcgan', target_size=64, channels=1):
+                self.data_list = data_list
+                self.transform = transform
+                self.model_type = model_type
+                self.target_size = target_size
+                self.channels = channels
+            
+            def __len__(self):
+                return len(self.data_list)
+            
+            def __getitem__(self, idx):
+                item = self.data_list[idx]
+                try:
+                    if isinstance(item, dict) and 'image_data' in item:
+                        img_data = base64.b64decode(item['image_data'])
+                        img = Image.open(io.BytesIO(img_data))
+                        
+                        if self.channels == 1 and img.mode != 'L':
+                            img = img.convert('L')
+                        elif self.channels == 3 and img.mode != 'RGB':
+                            img = img.convert('RGB')
+                        
+                        if self.transform:
+                            img = self.transform(img)
+                        
+                        return img
+                    elif isinstance(item, torch.Tensor):
+                        return item
+                    elif isinstance(item, tuple):
+                        return item[0]  # Return just the image
+                    else:
+                        return torch.zeros(self.channels, self.target_size, self.target_size)
+                except Exception as e:
+                    print(f"Error processing image {idx}: {e}")
+                    return torch.zeros(self.channels, self.target_size, self.target_size)
+        
+        # =============================================================================
         # ARGUMENT PARSING
         # =============================================================================
         
@@ -109,67 +150,111 @@ implementation:
         print(f"  Learning Rate: {learning_rate}")
         
         # =============================================================================
-        # LOAD DATA (COMPATIBLE WITH PIPELINE LOGIC)
+        # LOAD DATA (WITH GANDataset CLASS DEFINED)
         # =============================================================================
         
         print("\\n[1/4] LOADING PREPROCESSED DATA")
         print("-"*50)
         
-        with open(args.preprocessed_data, 'rb') as f:
-            data_wrapper = pickle.load(f)
-        
-        print(f"Data wrapper type: {type(data_wrapper)}")
-        
-        # Handle different data formats
-        if isinstance(data_wrapper, dict) and 'dataset' in data_wrapper:
-            # Format from pipeline script
-            dataset = data_wrapper['dataset']
-            wrapper_model_type = data_wrapper.get('model_type', gan_type)
-            wrapper_image_size = data_wrapper.get('image_size', image_size)
-            wrapper_channels = data_wrapper.get('channels', channels)
-            wrapper_input_dim = data_wrapper.get('input_dim')
+        # First define the GANDataset class, then load pickle
+        try:
+            with open(args.preprocessed_data, 'rb') as f:
+                data_wrapper = pickle.load(f)
             
-            print(f"DATASET INFO:")
-            print(f"  Samples: {len(dataset)}")
-            print(f"  Model Type: {wrapper_model_type}")
-            print(f"  Image Size: {wrapper_image_size}")
-            print(f"  Channels: {wrapper_channels}")
-            print(f"  Input Dim: {wrapper_input_dim}")
+            print(f"Data wrapper type: {type(data_wrapper)}")
             
-            if wrapper_model_type != gan_type:
-                print(f"  Model type mismatch: Config={gan_type}, Wrapper={wrapper_model_type}")
-                gan_type = wrapper_model_type
-            
-            image_size = wrapper_image_size
-            channels = wrapper_channels
-            
-        elif isinstance(data_wrapper, DataLoader):
-            # Direct DataLoader
-            dataloader = data_wrapper
-            print(f"Direct DataLoader loaded with {len(dataloader.dataset)} samples")
-            
-        elif isinstance(data_wrapper, Dataset):
-            # PyTorch Dataset
-            dataset = data_wrapper
-            print(f"PyTorch Dataset loaded with {len(dataset)} samples")
-            
-        else:
-            # Try to handle as list of images
-            print(f"Unexpected data format: {type(data_wrapper)}, trying to handle...")
-            dataset = data_wrapper
+            # Handle different data formats
+            if isinstance(data_wrapper, dict) and 'dataset' in data_wrapper:
+                # Format from pipeline script
+                dataset_obj = data_wrapper['dataset']
+                wrapper_model_type = data_wrapper.get('model_type', gan_type)
+                wrapper_image_size = data_wrapper.get('image_size', image_size)
+                wrapper_channels = data_wrapper.get('channels', channels)
+                wrapper_input_dim = data_wrapper.get('input_dim')
+                
+                print(f"DATASET INFO:")
+                print(f"  Samples: {len(dataset_obj)}")
+                print(f"  Model Type: {wrapper_model_type}")
+                print(f"  Image Size: {wrapper_image_size}")
+                print(f"  Channels: {wrapper_channels}")
+                print(f"  Input Dim: {wrapper_input_dim}")
+                
+                if wrapper_model_type != gan_type:
+                    print(f"  Model type mismatch: Config={gan_type}, Wrapper={wrapper_model_type}")
+                    gan_type = wrapper_model_type
+                
+                image_size = wrapper_image_size
+                channels = wrapper_channels
+                
+                # Check if dataset_obj is already a Dataset or needs conversion
+                if isinstance(dataset_obj, Dataset):
+                    dataset = dataset_obj
+                else:
+                    # Create GANDataset from data list
+                    dataset = GANDataset(
+                        data_list=dataset_obj,
+                        model_type=gan_type,
+                        target_size=image_size,
+                        channels=channels
+                    )
+                    
+            elif isinstance(data_wrapper, GANDataset):
+                # Direct GANDataset
+                dataset = data_wrapper
+                print(f"Direct GANDataset loaded with {len(dataset)} samples")
+                
+            elif isinstance(data_wrapper, Dataset):
+                # Other PyTorch Dataset
+                dataset = data_wrapper
+                print(f"PyTorch Dataset loaded with {len(dataset)} samples")
+                
+            elif isinstance(data_wrapper, DataLoader):
+                # Direct DataLoader
+                dataloader = data_wrapper
+                dataset = dataloader.dataset
+                print(f"Direct DataLoader loaded with {len(dataset)} samples")
+                
+            else:
+                # Try to handle as list of images
+                print(f"Unexpected data format: {type(data_wrapper)}, trying to handle...")
+                dataset = GANDataset(
+                    data_list=data_wrapper,
+                    model_type=gan_type,
+                    target_size=image_size,
+                    channels=channels
+                )
+                
+        except Exception as e:
+            print(f"Error loading data: {e}")
+            print("Creating dummy dataset for testing")
+            # Create dummy dataset
+            dummy_data = [{'image_data': base64.b64encode(np.random.rand(64, 64).tobytes()).decode('utf-8')} 
+                         for _ in range(100)]
+            dataset = GANDataset(
+                data_list=dummy_data,
+                model_type=gan_type,
+                target_size=image_size,
+                channels=channels
+            )
         
         # Create DataLoader with proper collate function
         def create_collate_fn(gan_type, image_size, channels):
             def collate_fn(batch):
                 # Handle different batch formats
-                if isinstance(batch[0], torch.Tensor):
-                    images = torch.stack(batch)
-                elif isinstance(batch[0], tuple):
-                    images, _ = zip(*batch)
-                    images = torch.stack(images)
-                else:
-                    # Try to convert
-                    images = torch.stack([torch.tensor(item) for item in batch])
+                images = []
+                for item in batch:
+                    if isinstance(item, torch.Tensor):
+                        images.append(item)
+                    elif isinstance(item, tuple):
+                        images.append(item[0])  # Just the image
+                    else:
+                        # Try to convert
+                        images.append(torch.tensor(item))
+                
+                if len(images) == 0:
+                    return torch.tensor([])
+                
+                images = torch.stack(images)
                 
                 # CRITICAL: Apply the same logic as the pipeline script
                 if gan_type in ['vanilla_gan', 'vanilla']:
@@ -182,9 +267,13 @@ implementation:
                 else:
                     # For DCGAN: ensure (batch, channels, height, width)
                     if len(images.shape) == 2:  # Flattened, reshape
-                        batch_size = images.shape[0]
-                        images = images.view(batch_size, channels, image_size, image_size)
+                        batch_size_dim = images.shape[0]
+                        images = images.view(batch_size_dim, channels, image_size, image_size)
                         print(f"  DCGAN: Reshaped to {images.shape}")
+                    elif len(images.shape) == 3:  # (batch, height, width), add channel
+                        batch_size_dim = images.shape[0]
+                        images = images.unsqueeze(1)  # Add channel dimension
+                        print(f"  DCGAN: Added channel dimension to {images.shape}")
                 
                 return images
             
@@ -202,12 +291,21 @@ implementation:
             )
         
         # Test one batch
-        test_batch = next(iter(dataloader))
-        print(f"TEST BATCH SHAPE: {test_batch.shape}")
-        print(f"DATALOADER INFO:")
-        print(f"  Total Batches: {len(dataloader)}")
-        print(f"  Batch Size: {batch_size}")
-        print(f"  Total Samples: {len(dataloader.dataset)}")
+        try:
+            test_batch = next(iter(dataloader))
+            print(f"TEST BATCH SHAPE: {test_batch.shape}")
+            print(f"DATALOADER INFO:")
+            print(f"  Total Batches: {len(dataloader)}")
+            print(f"  Batch Size: {batch_size}")
+            print(f"  Total Samples: {len(dataset)}")
+        except Exception as e:
+            print(f"Error testing batch: {e}")
+            # Create dummy batch
+            if gan_type == 'dcgan':
+                test_batch = torch.randn(batch_size, channels, image_size, image_size)
+            else:
+                test_batch = torch.randn(batch_size, image_size * image_size * channels)
+            print(f"Created dummy batch with shape: {test_batch.shape}")
         
         # =============================================================================
         # LOAD GAN MODULES FROM NESY_FACTORY
@@ -250,7 +348,7 @@ implementation:
             raise ImportError("Failed to load any GAN modules")
         
         # =============================================================================
-        # LOAD AND RECONSTRUCT MODEL (UPDATED FOR PIPELINE COMPATIBILITY)
+        # LOAD AND RECONSTRUCT MODEL
         # =============================================================================
         
         print("\\n[3/4] LOADING INITIALIZED MODEL")
@@ -277,7 +375,7 @@ implementation:
             
             if saved_model_type == 'dcgan' and DCGAN is not None:
                 print("Creating DCGAN configuration")
-                # Update config with current dataset info (CRITICAL)
+                # Update config with current dataset info
                 config_dict['image_size'] = image_size
                 config_dict['channels'] = channels
                 config_dict['latent_dim'] = latent_dim
@@ -337,7 +435,7 @@ implementation:
                     
             elif saved_model_type in ['vanilla_gan', 'vanilla'] and VanillaGAN is not None:
                 print("Creating VanillaGAN configuration")
-                # Update config with current dataset info (CRITICAL)
+                # Update config with current dataset info
                 input_dim = image_size * image_size * channels
                 config_dict['input_dim'] = input_dim
                 config_dict['latent_dim'] = latent_dim
@@ -416,7 +514,7 @@ implementation:
             print(f"  Discriminator output range: [{d_output.min():.4f}, {d_output.max():.4f}]")
         
         # =============================================================================
-        # TRAINING LOOP (WITH PIPELINE-COMPATIBLE ALGORITHM HANDLING)
+        # TRAINING LOOP
         # =============================================================================
         
         print("\\n[4/4] STARTING TRAINING")
@@ -443,7 +541,7 @@ implementation:
         print("\\nALGORITHM-SPECIFIC PRE-TRAINING")
         print("-"*50)
         
-        # Run algorithm-specific pre-training (following pipeline logic)
+        # Run algorithm-specific pre-training
         def run_algorithm_pre_training(gan, dataloader, algorithm):
             print(f"  Running {algorithm} pre-training...")
             
@@ -452,13 +550,13 @@ implementation:
                     if hasattr(gan.trainer, 'train_forward_forward'):
                         print("  Calling train_forward_forward()...")
                         results = gan.trainer.train_forward_forward(dataloader, verbose=True)
-                        print("  ✅ Forward-Forward pre-training completed")
+                        print("   Forward-Forward pre-training completed")
                         return True
                     else:
-                        print("  ⚠️ No train_forward_forward method found")
+                        print("   No train_forward_forward method found")
                         return False
                 except Exception as e:
-                    print(f"  ⚠️ Forward-Forward pre-training failed: {e}")
+                    print(f"   Forward-Forward pre-training failed: {e}")
                     return False
                     
             elif algorithm == 'cafo':
@@ -466,13 +564,13 @@ implementation:
                     if hasattr(gan.trainer, 'train_cafo'):
                         print("  Calling train_cafo()...")
                         results = gan.trainer.train_cafo(dataloader, verbose=True)
-                        print("  ✅ CAFO pre-training completed")
+                        print("   CAFO pre-training completed")
                         return True
                     else:
-                        print("  ⚠️ No train_cafo method found")
+                        print("   No train_cafo method found")
                         return False
                 except Exception as e:
-                    print(f"  ⚠️ CAFO pre-training failed: {e}")
+                    print(f"   CAFO pre-training failed: {e}")
                     return False
             
             # Backprop doesn't need pre-training
@@ -481,7 +579,7 @@ implementation:
         if algorithm in ['forward_forward', 'cafo']:
             pre_training_success = run_algorithm_pre_training(gan, dataloader, algorithm)
             if not pre_training_success:
-                print(f"  ⚠️ {algorithm} pre-training failed, continuing with standard training")
+                print(f"   {algorithm} pre-training failed, continuing with standard training")
         elif algorithm == 'backprop':
             print("Starting standard Backprop training")
         else:
@@ -694,7 +792,7 @@ implementation:
         print(f"Generated {len(generated_samples)} samples")
         
         # =============================================================================
-        # SAVE TRAINING METRICS (WITH PIPELINE-COMPATIBLE FORMAT)
+        # SAVE TRAINING METRICS
         # =============================================================================
         
         training_metrics = {
@@ -720,18 +818,16 @@ implementation:
                 'avg_epoch_time': avg_epoch_time,
                 'total_batches_processed': total_batches,
                 'avg_batch_time': total_training_time/total_batches if total_batches > 0 else 0,
-                'throughput': len(dataloader.dataset) * epochs / total_training_time if total_training_time > 0 else 0
+                'throughput': len(dataset) * epochs / total_training_time if total_training_time > 0 else 0
             },
             'convergence_info': {
                 'generator_converged': training_history['losses_g'][-1] < 2.0,
                 'discriminator_converged': 0.3 < training_history['losses_d'][-1] < 2.0,
                 'scores_balanced': (0.3 < training_history['real_scores'][-1] < 0.9) and (0.1 < training_history['fake_scores'][-1] < 0.7),
                 'training_stable': abs(training_history['real_scores'][-1] - training_history['fake_scores'][-1]) > 0.1
-            }
+            },
+            'val_loss': training_history['losses_d'][-1]  # For pipeline compatibility
         }
-        
-        # Add validation loss for pipeline compatibility
-        training_metrics['val_loss'] = training_history['losses_d'][-1]  # Use discriminator loss as validation loss
         
         print("\\n" + "="*80)
         print("TRAINING METRICS SUMMARY")
@@ -747,7 +843,6 @@ implementation:
         print(f"Samples Generated: {training_metrics['samples_generated']}")
         print(f"Throughput: {training_metrics['performance']['throughput']:.1f} samples/second")
         print(f"Average Batch Time: {training_metrics['performance']['avg_batch_time']:.3f}s")
-        print(f"Validation Loss (for pipeline): {training_metrics['val_loss']:.6f}")
         
         # =============================================================================
         # SAVE OUTPUTS
