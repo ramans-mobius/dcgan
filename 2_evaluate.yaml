@@ -1,4 +1,4 @@
-name: 2 Evaluate
+name: gpu Evaluate
 description: Evaluates GAN model using master config
 inputs:
   - name: trained_model
@@ -20,7 +20,7 @@ outputs:
 
 implementation:
   container:
-    image: gurpreetgandhi/nesy-factory:v35
+    image: gurpreetgandhi/nesy-factory:v36gpu
     command:
       - sh
       - -c
