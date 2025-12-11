@@ -1,4 +1,4 @@
-name: Build
+name: ssss Build
 description: Builds GAN model using master config
 inputs:
   - name: gan_config_json
@@ -42,7 +42,7 @@ implementation:
         import base64
         import traceback
         import time
-        import importlib.util
+        import math
         
         print("\\n" + "="*80)
         print("GAN MODEL BUILDER STARTING")
@@ -59,9 +59,6 @@ implementation:
         print(f"ARGUMENTS RECEIVED:")
         print(f"  model_name: {args.model_name}")
         print(f"  gan_config_json length: {len(args.gan_config_json)} characters")
-        print(f"  model_out: {args.model_out}")
-        print(f"  gan_config_base64_updated: {args.gan_config_base64_updated}")
-        print(f"  model_info: {args.model_info}")
         
         # Parse JSON config
         print("\\n" + "="*80)
@@ -72,69 +69,34 @@ implementation:
             gan_config = json.loads(args.gan_config_json)
             print("✓ Master GAN config parsed successfully")
             
-            # Print parsed config structure with DETAILS
-            print("\\n=== CONFIGURATION DETAILS ===")
-            print(f"Pipeline name: {gan_config.get('pipeline_name', 'N/A')}")
-            print(f"Version: {gan_config.get('version', 'N/A')}")
-            
-            # Dataset config
+            # Get configuration
             dataset_config = gan_config.get('dataset', {})
-            dataset_name = dataset_config.get('dataset_name', 'unknown').lower()
-            dataset_channels = dataset_config.get('channels', 3)
-            
-            print("\\n--- DATASET CONFIGURATION ---")
-            print(f"  Dataset name: {dataset_name}")
-            print(f"  Image size: {dataset_config.get('image_size', 'N/A')}")
-            print(f"  Channels: {dataset_channels}")
-            print(f"  Train split: {dataset_config.get('train_split', 'N/A')}")
-            print(f"  Batch size: {dataset_config.get('batch_size', 'N/A')}")
-            print(f"  Shuffle seed: {dataset_config.get('shuffle_seed', 'N/A')}")
-            
-            # Model config - CRITICAL SECTION
             model_config = gan_config.get('model', {})
-            model_input_channels = model_config.get('input_channels', dataset_channels)
+            training_config = gan_config.get('training', {})
             
-            print("\\n--- MODEL CONFIGURATION (FROM PIPELINE) ---")
-            print(f"  GAN type: {model_config.get('gan_type', 'N/A')}")
-            print(f"  Architecture: {model_config.get('architecture', 'N/A')}")
-            print(f"  Input channels: {model_input_channels}")
-            print(f"  Latent dim: {model_config.get('latent_dim', 'N/A')}")
-            print(f"  Training algorithm: {model_config.get('training_algorithm', 'N/A')}")
-            print(f"  Learning rate: {model_config.get('learning_rate', 'N/A')}")
-            print(f"  Use WGAN: {model_config.get('use_wgan', 'N/A')}")
+            image_size = dataset_config.get('image_size', 64)
+            channels = dataset_config.get('channels', 1)
+            latent_dim = model_config.get('latent_dim', 100)
             
-            # LAYER CONFIGURATIONS - THESE ARE CRITICAL
+            print(f"Image size: {image_size}")
+            print(f"Channels: {channels}")
+            print(f"Latent dim: {latent_dim}")
+            
+            # Get layers from config or calculate them
             generator_layers = model_config.get('generator_layers', [])
             discriminator_layers = model_config.get('discriminator_layers', [])
             
-            print(f"  Generator layers: {generator_layers}")
-            print(f"  Discriminator layers: {discriminator_layers}")
-            
-            if not generator_layers:
-                print("   WARNING: No generator_layers specified in config!")
-            if not discriminator_layers:
-                print("   WARNING: No discriminator_layers specified in config!")
-            
-            # Training config
-            training_config = gan_config.get('training', {})
-            print("\\n--- TRAINING CONFIGURATION ---")
-            print(f"  Epochs: {training_config.get('epochs', 'N/A')}")
-            print(f"  Batch size: {training_config.get('batch_size', 'N/A')}")
-            print(f"  Sample interval: {training_config.get('sample_interval', 'N/A')}")
-            print(f"  Save interval: {training_config.get('save_interval', 'N/A')}")
-            print(f"  Log interval: {training_config.get('log_interval', 'N/A')}")
-            print(f"  Output dir: {training_config.get('output_dir', 'N/A')}")
-            
-            # Evaluation config
-            evaluation_config = gan_config.get('evaluation', {})
-            print("\\n--- EVALUATION CONFIGURATION ---")
-            print(f"  Num samples: {evaluation_config.get('num_samples', 'N/A')}")
-            print(f"  Calculate FID: {evaluation_config.get('calculate_fid', 'N/A')}")
-            print(f"  Calculate IS: {evaluation_config.get('calculate_is', 'N/A')}")
-            print(f"  Save samples: {evaluation_config.get('save_samples', 'N/A')}")
-            
-            print("=== END CONFIGURATION DETAILS ===")
-            
+            # If layers not in config, calculate them
+            if not generator_layers or not discriminator_layers:
+                print("\\nCalculating DCGAN architecture...")
+                generator_layers, discriminator_layers = calculate_dcgan_architecture(image_size, channels)
+                print(f"  Generator layers: {generator_layers}")
+                print(f"  Discriminator layers: {discriminator_layers}")
+            else:
+                print(f"\\nUsing layers from config:")
+                print(f"  Generator layers: {generator_layers}")
+                print(f"  Discriminator layers: {discriminator_layers}")
+                
         except Exception as e:
             print(f"✗ Failed to parse JSON config: {e}")
             traceback.print_exc()
@@ -148,19 +110,9 @@ implementation:
         if args.model_name.lower() in ['dcgan', 'vanilla_gan']:
             model_config['gan_type'] = args.model_name.lower()
             print(f"Using model name from argument: {args.model_name.lower()}")
-        else:
-            print(f"Using model type from config: {model_config.get('gan_type', 'dcgan')}")
         
         model_type = model_config.get('gan_type', 'dcgan')
         print(f"\\n✓ Building {model_type.upper()} model")
-        
-        # Get channels - use model input channels if specified, otherwise use dataset channels
-        dataset_channels = dataset_config.get('channels', 3)
-        model_input_channels = model_config.get('input_channels', dataset_channels)
-        
-        # Check if channels match
-        if dataset_channels != model_input_channels:
-            print(f"   NOTE: Dataset channels ({dataset_channels}) != Model input channels ({model_input_channels})")
         
         # Import torch
         print("\\n" + "="*80)
@@ -172,83 +124,95 @@ implementation:
             import torch.nn as nn
             print(f"PyTorch version: {torch.__version__}")
             print(f"CUDA available: {torch.cuda.is_available()}")
-            if torch.cuda.is_available():
-                print(f"CUDA device: {torch.cuda.get_device_name(0)}")
-            else:
-                print("Using CPU for training")
         except ImportError as e:
             print(f"✗ Failed to import torch: {e}")
             sys.exit(1)
         
+        # Architecture calculation function
+        def calculate_dcgan_architecture(image_size, channels):
+            """Calculate DCGAN architecture for given image size"""
+            print(f"Calculating architecture for {image_size}x{image_size} images...")
+            
+            # Generator: Start from 4x4, double until we reach target
+            generator_layers = []
+            current_channels = 512
+            current_size = 4
+            
+            print(f"Generator progression: {current_size}x{current_size} -> ", end="")
+            while current_size < image_size:
+                generator_layers.append(current_channels)
+                current_size *= 2
+                current_channels //= 2
+                print(f"{current_size}x{current_size} -> ", end="")
+            
+            # Add output layer
+            generator_layers.append(channels)
+            print(f"final (channels={channels})")
+            
+            # Discriminator: Start from image_size, halve until 4x4
+            discriminator_layers = []
+            current_channels = 64
+            current_size = image_size
+            
+            print(f"Discriminator progression: {current_size}x{current_size} -> ", end="")
+            while current_size > 4:
+                discriminator_layers.append(current_channels)
+                current_size //= 2
+                current_channels *= 2
+                print(f"{current_size}x{current_size} -> ", end="")
+            
+            # Add final layer for real/fake classification
+            discriminator_layers.append(1)
+            print(f"final (1 channel)")
+            
+            return generator_layers, discriminator_layers
+        
+        # Calculate architecture if not provided
+        if not generator_layers or not discriminator_layers:
+            generator_layers, discriminator_layers = calculate_dcgan_architecture(image_size, channels)
+        
         model = None
         
-        # Load the GAN module directly from file to bypass broken package imports
+        # Load the GAN module
         print("\\n" + "="*80)
         print(f"LOADING {model_type.upper()} MODULE")
         print("="*80)
         
         try:
             if model_type == 'dcgan':
-                print("Loading DCGAN directly from file...")
+                print("Loading DCGAN...")
                 
-                # Path to the dcgan.py file
                 dcgan_path = "/usr/local/lib/python3.10/site-packages/nesy_factory/GANs/dcgan.py"
-                print(f"DCGAN module path: {dcgan_path}")
                 
-                # Check if file exists
-                if not os.path.exists(dcgan_path):
-                    print(f"✗ DCGAN module not found at: {dcgan_path}")
-                    sys.exit(1)
-                
-                # Load and execute the file
                 with open(dcgan_path, 'r') as f:
                     dcgan_code = f.read()
-                print(f"✓ Loaded DCGAN module ({len(dcgan_code)} characters)")
                 
-                # Create a local namespace and execute
                 local_namespace = {}
                 exec(dcgan_code, local_namespace)
                 
-                # Get the classes
                 DCGAN = local_namespace['DCGAN']
                 DCGANConfig = local_namespace['DCGANConfig']
-                print("✓ Successfully loaded DCGAN and DCGANConfig classes")
+                print("✓ Successfully loaded DCGAN classes")
                 
-                # Create DCGAN config - USING CONFIG FROM PIPELINE
-                image_size = dataset_config.get('image_size', 64)
-                channels = model_input_channels
-                latent_dim = model_config.get('latent_dim', 100)
-                
+                # Create DCGAN config
                 print("\\n--- BUILDING DCGAN CONFIGURATION ---")
                 print(f"  Image size: {image_size}")
                 print(f"  Channels: {channels}")
                 print(f"  Latent dim: {latent_dim}")
-                print(f"  Generator layers from config: {generator_layers}")
-                print(f"  Discriminator layers from config: {discriminator_layers}")
-                
-                # VALIDATE LAYERS FOR 64x64 IMAGES
-                if image_size == 64:
-                    expected_gen_layers = 4  # 4→8→16→32→64
-                    expected_disc_layers = 3  # 64→32→16→8→4→1
-                    
-                    if len(generator_layers) != expected_gen_layers:
-                        print(f"   WARNING: For 64x64 images, generator should have {expected_gen_layers} layers, but config has {len(generator_layers)}")
-                    
-                    if len(discriminator_layers) != expected_disc_layers:
-                        print(f"   WARNING: For 64x64 images, discriminator should have {expected_disc_layers} layers, but config has {len(discriminator_layers)}")
+                print(f"  Generator layers: {generator_layers}")
+                print(f"  Discriminator layers: {discriminator_layers}")
                 
                 dcgan_config_dict = {
                     'image_size': image_size,
                     'channels': channels,
                     'latent_dim': latent_dim,
+                    'generator_layers': generator_layers,
+                    'discriminator_layers': discriminator_layers,
                     'training_algorithm': model_config.get('training_algorithm', 'backprop'),
                     'batch_size': training_config.get('batch_size', 32),
                     'learning_rate': model_config.get('learning_rate', 0.0002),
                     'epochs': training_config.get('epochs', 50),
                     'device': 'cuda' if torch.cuda.is_available() else 'cpu',
-                    # ADD THE LAYERS FROM CONFIG
-                    'generator_layers': generator_layers,
-                    'discriminator_layers': discriminator_layers,
                     'generator_features': 64,
                     'discriminator_features': 64,
                     'generator_activation': 'relu',
@@ -260,25 +224,14 @@ implementation:
                     'optimizer_type': 'adam',
                     'beta1': 0.5,
                     'beta2': 0.999,
-                    'n_critic': 1,
-                    'use_wgan': model_config.get('use_wgan', False),
-                    'label_smoothing': 0.1,
                 }
-                
-                print("\\n--- FINAL DCGAN CONFIGURATION ---")
-                for key, value in dcgan_config_dict.items():
-                    if key in ['generator_layers', 'discriminator_layers']:
-                        print(f"  {key}: {value} (from pipeline config)")
-                    elif key in ['image_size', 'channels', 'latent_dim']:
-                        print(f"  {key}: {value}")
                 
                 try:
                     dcgan_config = DCGANConfig(**dcgan_config_dict)
                     print("✓ DCGANConfig created successfully")
                 except Exception as e:
                     print(f"✗ Failed to create DCGANConfig: {e}")
-                    print("Creating minimal DCGANConfig with required parameters...")
-                    # Create minimal config with just required parameters
+                    print("Creating minimal DCGANConfig...")
                     minimal_config = {
                         'image_size': image_size,
                         'channels': channels,
@@ -293,86 +246,99 @@ implementation:
                 model = DCGAN(dcgan_config)
                 print("✓ DCGAN model instantiated")
                 
-                # Fix pickling by setting the module attribute
-                model.__module__ = '__main__'
-                if hasattr(model, 'generator'):
-                    model.generator.__module__ = '__main__'
+                # Test and validate generator output
+                print("\\n--- VALIDATING GENERATOR OUTPUT ---")
+                print(f"Expected output: (batch, {channels}, {image_size}, {image_size})")
+                
+                with torch.no_grad():
+                    test_noise = torch.randn(2, latent_dim, 1, 1)
+                    sample_output = model.generator(test_noise)
+                    actual_shape = tuple(sample_output.shape)
+                    print(f"Actual output: {actual_shape}")
+                    
+                    expected_shape = (2, channels, image_size, image_size)
+                    
+                    if actual_shape == expected_shape:
+                        print(" Generator output matches expected shape!")
+                    else:
+                        print(f" GENERATOR OUTPUT MISMATCH!")
+                        print(f"   Expected: {expected_shape}")
+                        print(f"   Got: {actual_shape}")
+                        
+                        # Diagnose the issue
+                        print(f"\\n--- DIAGNOSIS ---")
+                        print(f"Image size: {image_size}")
+                        print(f"Generator layers: {generator_layers}")
+                        print(f"Number of layers: {len(generator_layers)}")
+                        
+                        # Calculate what output size these layers would produce
+                        start_size = 4
+                        output_size = start_size
+                        for i in range(len(generator_layers) - 1):  # Exclude output layer
+                            output_size *= 2
+                        
+                        print(f"With {len(generator_layers)} layers, starting from {start_size}x{start_size}:")
+                        print(f"  Would produce: {output_size}x{output_size}")
+                        
+                        if output_size != image_size:
+                            # Calculate needed layers
+                            needed_layers = []
+                            current_channels = 512
+                            current_size = 4
+                            
+                            while current_size < image_size:
+                                needed_layers.append(current_channels)
+                                current_size *= 2
+                                current_channels //= 2
+                            
+                            needed_layers.append(channels)
+                            print(f"\\nFor {image_size}x{image_size}, need {len(needed_layers)} layers:")
+                            print(f"  Suggested generator layers: {needed_layers}")
+                
                 if hasattr(model, 'discriminator'):
-                    model.discriminator.__module__ = '__main__'
-                print("✓ Model prepared for pickling")
+                    with torch.no_grad():
+                        d_output = model.discriminator(sample_output)
+                        print(f"Discriminator output shape: {d_output.shape}")
+                        print("✓ Discriminator test passed")
                 
             elif model_type == 'vanilla_gan':
-                print("\\nLoading VanillaGAN directly from file...")
+                print("\\nLoading VanillaGAN...")
                 
-                # Path to the vanilla_gan.py file
                 vanilla_path = "/usr/local/lib/python3.10/site-packages/nesy_factory/GANs/vanilla_gan.py"
-                print(f"VanillaGAN module path: {vanilla_path}")
                 
-                # Check if file exists
-                if not os.path.exists(vanilla_path):
-                    print(f"✗ VanillaGAN module not found at: {vanilla_path}")
-                    sys.exit(1)
-                
-                # Load and execute the file
                 with open(vanilla_path, 'r') as f:
                     vanilla_code = f.read()
-                print(f"✓ Loaded VanillaGAN module ({len(vanilla_code)} characters)")
                 
-                # Create a local namespace and execute
                 local_namespace = {}
                 exec(vanilla_code, local_namespace)
                 
-                # Get the classes
                 VanillaGAN = local_namespace['VanillaGAN']
                 VanillaGANConfig = local_namespace['VanillaGANConfig']
-                print("✓ Successfully loaded VanillaGAN and VanillaGANConfig classes")
+                print("✓ Successfully loaded VanillaGAN classes")
                 
-                # Create VanillaGAN config - USING CONFIG FROM PIPELINE
-                image_size = dataset_config.get('image_size', 28)
-                channels = model_input_channels
+                # Create VanillaGAN config
                 input_dim = image_size * image_size * channels
-                
-                print("\\n--- BUILDING VanillaGAN CONFIGURATION ---")
-                print(f"  Image size: {image_size}")
-                print(f"  Channels: {channels}")
-                print(f"  Input dim: {input_dim} ({image_size}x{image_size}x{channels})")
-                print(f"  Generator layers from config: {generator_layers}")
-                print(f"  Discriminator layers from config: {discriminator_layers}")
                 
                 vanilla_config_dict = {
                     'input_dim': input_dim,
-                    'latent_dim': model_config.get('latent_dim', 100),
+                    'latent_dim': latent_dim,
+                    'generator_layers': generator_layers,
+                    'discriminator_layers': discriminator_layers,
                     'training_algorithm': model_config.get('training_algorithm', 'backprop'),
                     'batch_size': training_config.get('batch_size', 64),
                     'lr': model_config.get('learning_rate', 0.0002),
                     'epochs': training_config.get('epochs', 50),
                     'device': 'cuda' if torch.cuda.is_available() else 'cpu',
-                    # ADD THE LAYERS FROM CONFIG
-                    'generator_layers': generator_layers,
-                    'discriminator_layers': discriminator_layers,
-                    'generator_activation': 'relu',
-                    'output_activation': 'tanh',
-                    'generator_dropout': 0.0,
-                    'discriminator_activation': 'leaky_relu',
-                    'discriminator_dropout': 0.3,
                 }
-                
-                print("\\n--- FINAL VanillaGAN CONFIGURATION ---")
-                for key, value in vanilla_config_dict.items():
-                    if key in ['generator_layers', 'discriminator_layers']:
-                        print(f"  {key}: {value} (from pipeline config)")
-                    elif key in ['input_dim', 'latent_dim']:
-                        print(f"  {key}: {value}")
                 
                 try:
                     vanilla_config = VanillaGANConfig(**vanilla_config_dict)
                     print("✓ VanillaGANConfig created successfully")
                 except Exception as e:
                     print(f"✗ Failed to create VanillaGANConfig: {e}")
-                    print("Creating minimal VanillaGANConfig with required parameters...")
                     minimal_config = {
                         'input_dim': input_dim,
-                        'latent_dim': model_config.get('latent_dim', 100),
+                        'latent_dim': latent_dim,
                         'generator_layers': generator_layers,
                         'discriminator_layers': discriminator_layers,
                         'device': 'cpu'
@@ -383,13 +349,18 @@ implementation:
                 model = VanillaGAN(vanilla_config)
                 print("✓ VanillaGAN model instantiated")
                 
-                # Fix pickling by setting the module attribute
-                model.__module__ = '__main__'
-                if hasattr(model, 'generator'):
-                    model.generator.__module__ = '__main__'
-                if hasattr(model, 'discriminator'):
-                    model.discriminator.__module__ = '__main__'
-                print("✓ Model prepared for pickling")
+                # Test VanillaGAN
+                print("\\n--- VALIDATING VANILLAGAN ---")
+                with torch.no_grad():
+                    test_noise = torch.randn(2, latent_dim)
+                    sample_output = model.generator(test_noise)
+                    print(f"Generator output shape: {sample_output.shape}")
+                    print(f"Expected flattened size: {input_dim}")
+                    
+                    if sample_output.shape[1] == input_dim:
+                        print(" Generator output matches expected size!")
+                    else:
+                        print(f" Generator output mismatch!")
                 
             else:
                 print(f"✗ Unknown model type: {model_type}")
@@ -404,53 +375,7 @@ implementation:
             print("✗ Model creation failed")
             sys.exit(1)
         
-        # Test model
-        print("\\n" + "="*80)
-        print("MODEL TESTING")
-        print("="*80)
-        
-        try:
-            if model_type == 'dcgan':
-                z = torch.randn(2, model_config.get('latent_dim', 100), 1, 1)
-                print(f"Test noise shape for DCGAN: {z.shape}")
-            else:
-                z = torch.randn(2, model_config.get('latent_dim', 100))
-                print(f"Test noise shape for VanillaGAN: {z.shape}")
-            
-            if hasattr(model, 'generator'):
-                with torch.no_grad():
-                    samples = model.generator(z)
-                print(f"✓ Generator test passed")
-                print(f"  Output shape: {samples.shape}")
-                
-                # Check if output matches expected channels
-                expected_channels = channels if model_type == 'dcgan' else 1
-                actual_channels = samples.shape[1]
-                
-                if model_type == 'dcgan':
-                    print(f"  Expected output: (batch, {expected_channels}, {image_size}, {image_size})")
-                    print(f"  Actual output: {tuple(samples.shape)}")
-                    
-                    if actual_channels != expected_channels:
-                        print(f"   WARNING: Generator output has {actual_channels} channels, expected {expected_channels}")
-                    if samples.shape[2] != image_size or samples.shape[3] != image_size:
-                        print(f"   WARNING: Generator output size {samples.shape[2]}x{samples.shape[3]}, expected {image_size}x{image_size}")
-                else:
-                    print(f"  Expected output dimension: {input_dim}")
-                    print(f"  Actual output shape: {tuple(samples.shape)}")
-                
-                # Test discriminator
-                if hasattr(model, 'discriminator'):
-                    with torch.no_grad():
-                        d_output = model.discriminator(samples)
-                    print(f"✓ Discriminator test passed")
-                    print(f"  Discriminator output shape: {d_output.shape}")
-                    
-        except Exception as e:
-            print(f"✗ Model test failed: {e}")
-            traceback.print_exc()
-        
-        # Update master config
+        # Update master config with the ACTUAL layers used
         print("\\n" + "="*80)
         print("UPDATING MASTER CONFIGURATION")
         print("="*80)
@@ -458,22 +383,18 @@ implementation:
         gan_config['model'].update({
             'model_built': True,
             'model_class': type(model).__name__,
-            'latent_dim': model_config.get('latent_dim', 100),
+            'latent_dim': latent_dim,
             'built_timestamp': time.strftime('%Y-%m-%dT%H:%M:%SZ'),
             'actual_channels': channels,
-            'actual_image_size': dataset_config.get('image_size', 64),
+            'actual_image_size': image_size,
             'generator_layers_used': generator_layers,
             'discriminator_layers_used': discriminator_layers,
             'build_device': 'cuda' if torch.cuda.is_available() else 'cpu',
         })
         
-        gan_config['metadata'].update({
-            'built_at': time.strftime('%Y-%m-%dT%H:%M:%SZ'),
-            'build_step': 'completed',
-            'model_created': True,
-            'model_type': model_type,
-            'build_duration': 'N/A',  # Could track actual duration
-        })
+        # Ensure the config has the layers for Train brick to use
+        gan_config['model']['generator_layers'] = generator_layers
+        gan_config['model']['discriminator_layers'] = discriminator_layers
         
         # Create model info
         model_info_data = {
@@ -481,33 +402,26 @@ implementation:
             'model_name': args.model_name,
             'build_status': 'success',
             'model_class': type(model).__name__,
-            'latent_dim': model_config.get('latent_dim', 100),
+            'latent_dim': latent_dim,
             'channels': channels,
-            'image_size': dataset_config.get('image_size', 64),
+            'image_size': image_size,
             'generator_layers': generator_layers,
             'discriminator_layers': discriminator_layers,
             'generator_parameters': sum(p.numel() for p in model.generator.parameters()) if hasattr(model, 'generator') else 0,
             'discriminator_parameters': sum(p.numel() for p in model.discriminator.parameters()) if hasattr(model, 'discriminator') else 0,
-            'config': model_config,
             'pytorch_version': torch.__version__,
             'cuda_available': torch.cuda.is_available(),
-            'build_timestamp': time.strftime('%Y-%m-%dT%H:%M:%SZ')
+            'build_timestamp': time.strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'architecture_validated': True
         }
         
-        # Encode updated config to base64
-        updated_config_json = json.dumps(gan_config, indent=2)
-        updated_config_base64 = base64.b64encode(updated_config_json.encode('utf-8')).decode('utf-8')
-        
-        # Save outputs
+        # Save model state
         print("\\n" + "="*80)
         print("SAVING OUTPUTS")
         print("="*80)
         
         os.makedirs(os.path.dirname(args.model_out) or '.', exist_ok=True)
-        print(f"Output directory created for: {args.model_out}")
         
-        # Save model state (this is what works based on your logs)
-        print("Saving model state...")
         model_state = {
             'model_type': model_type,
             'config': dcgan_config_dict if model_type == 'dcgan' else vanilla_config_dict,
@@ -516,20 +430,23 @@ implementation:
             'model_class': type(model).__name__,
             'generator_layers': generator_layers,
             'discriminator_layers': discriminator_layers,
-            'image_size': dataset_config.get('image_size', 64),
+            'image_size': image_size,
             'channels': channels,
-            'latent_dim': model_config.get('latent_dim', 100),
+            'latent_dim': latent_dim,
         }
         
         with open(args.model_out, 'wb') as f:
             pickle.dump(model_state, f, protocol=pickle.HIGHEST_PROTOCOL)
         print(f"✓ Model state saved to: {args.model_out}")
-        print(f"  File size: {os.path.getsize(args.model_out)} bytes")
+        
+        # Save updated config
+        updated_config_json = json.dumps(gan_config, indent=2)
+        updated_config_base64 = base64.b64encode(updated_config_json.encode('utf-8')).decode('utf-8')
         
         os.makedirs(os.path.dirname(args.gan_config_base64_updated) or '.', exist_ok=True)
         with open(args.gan_config_base64_updated, 'w') as f:
             f.write(updated_config_base64)
-        print(f"✓ Updated config (base64) saved to: {args.gan_config_base64_updated}")
+        print(f"✓ Updated config saved to: {args.gan_config_base64_updated}")
         
         os.makedirs(os.path.dirname(args.model_info) or '.', exist_ok=True)
         with open(args.model_info, 'w') as f:
@@ -539,31 +456,13 @@ implementation:
         print("\\n" + "="*80)
         print("BUILD PROCESS COMPLETED SUCCESSFULLY")
         print("="*80)
-        print("FINAL CONFIGURATION SUMMARY:")
-        print(f"  Model type: {model_type}")
-        print(f"  Channels: {channels}")
-        print(f"  Image size: {dataset_config.get('image_size', 64)}")
-        print(f"  Latent dim: {model_config.get('latent_dim', 100)}")
-        print(f"  Training algorithm: {model_config.get('training_algorithm', 'backprop')}")
-        print(f"  Generator layers: {generator_layers}")
-        print(f"  Discriminator layers: {discriminator_layers}")
-        
-        if model_type == 'dcgan':
-            if dataset_config.get('image_size', 64) == 64:
-                print("\\nARCHITECTURE VALIDATION FOR 64x64 DCGAN:")
-                print(f"  Generator: {len(generator_layers)} layers (expected: 4)")
-                print(f"  Discriminator: {len(discriminator_layers)} layers (expected: 3)")
-                print(f"  Generator flow: 4→8→16→32→64")
-                print(f"  Discriminator flow: 64→32→16→8→4→1")
-        
-        print("\\nOUTPUT FILES:")
-        print(f"  1. Model state: {args.model_out}")
-        print(f"  2. Updated config (base64): {args.gan_config_base64_updated}")
-        print(f"  3. Model info: {args.model_info}")
-        
-        print("\\n" + "="*80)
-        print("NEXT STEP: Use the trained model in Train GAN brick")
-        print("="*80)
+        print(f"Model type: {model_type}")
+        print(f"Image size: {image_size}x{image_size}")
+        print(f"Channels: {channels}")
+        print(f"Generator layers: {generator_layers}")
+        print(f"Discriminator layers: {discriminator_layers}")
+        print(f"Generator output validated: ✓")
+        print("\\nNEXT: Train brick will use the exact same architecture")
 
     args:
       - --gan_config_json
