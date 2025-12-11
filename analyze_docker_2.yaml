@@ -1,25 +1,22 @@
-name: 2 Container Diagnostic
-description: Comprehensive diagnostic for nesy-factory v36-gpu container environment
+name: Container Structure Analyzer
+description: Analyzes container structure, checks nesy_factory availability, and maps accessible libraries
 inputs:
   - name: dummy_input
     type: String
-    description: Dummy input for testing container functionality
+    description: Dummy input for analysis
 outputs:
-  - name: diagnostic_report
+  - name: container_structure
     type: String
-    description: Full diagnostic report in JSON format
-  - name: gpu_status
+    description: Container filesystem and package structure
+  - name: nesy_analysis
     type: String
-    description: GPU availability and capabilities
-  - name: python_environment
+    description: Detailed analysis of nesy_factory
+  - name: import_guide
     type: String
-    description: Python and package versions
-  - name: nesy_structure
+    description: Guide on how to import/use found modules
+  - name: missing_deps
     type: String
-    description: nesy_factory package structure
-  - name: diagnostic_summary
-    type: String
-    description: Human-readable diagnostic summary
+    description: Missing dependencies report
 implementation:
   container:
     image: gurpreetgandhi/nesy-factory:v36-gpu
@@ -28,7 +25,7 @@ implementation:
       - -c
       - |
         echo "========================================================="
-        echo "STARTING CONTAINER DIAGNOSTIC"
+        echo "CONTAINER STRUCTURE ANALYZER"
         echo "========================================================="
         echo ""
         exec "$0" "$@"
@@ -36,617 +33,522 @@ implementation:
       - -u
       - -c
       - |
-        import argparse
         import os
         import sys
         import json
-        import base64
-        import traceback
-        import time
+        import importlib
         import subprocess
-        import platform
-        import datetime
+        import argparse
         from pathlib import Path
         
         print('\\n' + '='*80)
-        print('CONTAINER DIAGNOSTIC STARTING')
+        print('CONTAINER STRUCTURE ANALYZER')
         print('='*80)
         
-        parser = argparse.ArgumentParser(description='Container Diagnostic Tool')
-        parser.add_argument('--dummy_input', type=str, required=True, help='Dummy input for testing')
-        parser.add_argument('--diagnostic_report', type=str, required=True, help='Output path for full diagnostic report')
-        parser.add_argument('--gpu_status', type=str, required=True, help='Output path for GPU status')
-        parser.add_argument('--python_environment', type=str, required=True, help='Output path for Python environment')
-        parser.add_argument('--nesy_structure', type=str, required=True, help='Output path for nesy_factory structure')
-        parser.add_argument('--diagnostic_summary', type=str, required=True, help='Output path for human-readable summary')
+        parser = argparse.ArgumentParser(description='Container Structure Analyzer')
+        parser.add_argument('--dummy_input', type=str, required=True)
+        parser.add_argument('--container_structure', type=str, required=True)
+        parser.add_argument('--nesy_analysis', type=str, required=True)
+        parser.add_argument('--import_guide', type=str, required=True)
+        parser.add_argument('--missing_deps', type=str, required=True)
         args = parser.parse_args()
         
-        print(f'ARGUMENTS RECEIVED:')
-        print(f'  dummy_input: {args.dummy_input}')
+        print(f'Starting analysis with input: {args.dummy_input}')
         
-        # Initialize diagnostic results
-        diagnostic_data = {
-            'timestamp': datetime.datetime.now().isoformat(),
-            'dummy_input': args.dummy_input,
-            'system': {},
-            'python_environment': {},
-            'gpu_status': {},
-            'nesy_factory': {},
-            'critical_files': {},
-            'tests': {},
-            'summary': {},
-            'issues': [],
-            'recommendations': []
+        # ==================================================
+        # 1. SYSTEM PATH ANALYSIS
+        # ==================================================
+        print('\\n' + '='*80)
+        print('SYSTEM PATH ANALYSIS')
+        print('='*80)
+        
+        path_info = {
+            'python_path': sys.path,
+            'system_path': os.environ.get('PATH', '').split(':'),
+            'python_executable': sys.executable,
+            'python_version': sys.version,
+            'current_directory': os.getcwd()
         }
         
-        def log_issue(category, message, severity='WARNING'):
-            diagnostic_data['issues'].append({
-                'category': category,
-                'message': message,
-                'severity': severity,
-                'timestamp': time.strftime('%Y-%m-%dT%H:%M:%SZ')
-            })
-            print(f'[{severity}] {category}: {message}')
+        print(f'Python path: {sys.path[:5]}...')
+        print(f'System PATH: {os.environ.get("PATH", "")[:100]}...')
+        print(f'Python executable: {sys.executable}')
         
         # ==================================================
-        # 1. SYSTEM INFORMATION
+        # 2. PACKAGE LOCATION SEARCH
         # ==================================================
         print('\\n' + '='*80)
-        print('SYSTEM INFORMATION')
+        print('PACKAGE LOCATION SEARCH')
         print('='*80)
         
-        try:
-            diagnostic_data['system']['platform'] = platform.platform()
-            diagnostic_data['system']['python_version'] = platform.python_version()
-            diagnostic_data['system']['hostname'] = platform.node()
-            diagnostic_data['system']['processor'] = platform.processor()
-            diagnostic_data['system']['architecture'] = platform.architecture()
-            
-            print(f'✓ Platform: {platform.platform()}')
-            print(f'✓ Python: {platform.python_version()}')
-            print(f'✓ Hostname: {platform.node()}')
-        except Exception as e:
-            log_issue('SYSTEM', f'Failed to get system info: {e}', 'ERROR')
-        
-        # ==================================================
-        # 2. PYTHON ENVIRONMENT
-        # ==================================================
-        print('\\n' + '='*80)
-        print('PYTHON ENVIRONMENT')
-        print('='*80)
-        
-        packages_to_check = [
-            'torch', 'torchvision', 'numpy', 'Pillow', 
-            'matplotlib', 'scipy', 'pandas', 'argparse',
-            'pickle', 'json', 'base64'
-        ]
-        
-        for pkg in packages_to_check:
+        def find_package_location(package_name):
             try:
-                if pkg == 'torch':
-                    import torch
-                    diagnostic_data['python_environment']['torch'] = {
-                        'version': torch.__version__,
-                        'cuda_available': torch.cuda.is_available(),
-                        'cuda_version': torch.version.cuda if torch.cuda.is_available() else None,
-                        'gpu_count': torch.cuda.device_count() if torch.cuda.is_available() else 0
-                    }
-                    print(f'✓ torch: {torch.__version__}')
-                    print(f'  CUDA Available: {torch.cuda.is_available()}')
-                    if torch.cuda.is_available():
-                        print(f'  CUDA Version: {torch.version.cuda}')
-                        print(f'  GPU Count: {torch.cuda.device_count()}')
-                else:
-                    exec(f'import {pkg}')
-                    version = eval(f'{pkg}.__version__') if hasattr(eval(pkg), '__version__') else 'unknown'
-                    diagnostic_data['python_environment'][pkg] = version
-                    print(f'✓ {pkg}: {version}')
-            except ImportError as e:
-                diagnostic_data['python_environment'][pkg] = f'MISSING: {e}'
-                log_issue('PYTHON', f'Package missing: {pkg}', 'WARNING')
-                print(f'✗ {pkg}: MISSING')
-            except Exception as e:
-                diagnostic_data['python_environment'][pkg] = f'ERROR: {e}'
-                log_issue('PYTHON', f'Error importing {pkg}: {e}', 'WARNING')
-                print(f'✗ {pkg}: ERROR')
+                spec = importlib.util.find_spec(package_name)
+                if spec and spec.origin:
+                    return os.path.dirname(spec.origin)
+                return None
+            except:
+                return None
         
-        # ==================================================
-        # 3. GPU DIAGNOSTIC
-        # ==================================================
-        print('\\n' + '='*80)
-        print('GPU DIAGNOSTIC')
-        print('='*80)
+        # Check for nesy_factory
+        nesy_path = None
+        nesy_found = False
+        nesy_info = {}
         
-        try:
-            import torch
-            diagnostic_data['gpu_status']['pytorch_cuda_available'] = torch.cuda.is_available()
-            
-            if torch.cuda.is_available():
-                diagnostic_data['gpu_status']['cuda_version'] = torch.version.cuda
-                diagnostic_data['gpu_status']['device_count'] = torch.cuda.device_count()
-                
-                gpu_details = []
-                for i in range(torch.cuda.device_count()):
-                    props = torch.cuda.get_device_properties(i)
-                    detail = {
-                        'index': i,
-                        'name': torch.cuda.get_device_name(i),
-                        'memory_gb': round(props.total_memory / 1e9, 2),
-                        'capability': f'{props.major}.{props.minor}',
-                        'multi_processor_count': props.multi_processor_count
-                    }
-                    gpu_details.append(detail)
-                    print(f'✓ GPU {i}: {detail["name"]} ({detail["memory_gb"]}GB)')
-                
-                diagnostic_data['gpu_status']['details'] = gpu_details
-                
-                # Run GPU tests
-                print('\\nRunning GPU tests...')
-                test_results = {}
-                
-                # Test 1: Tensor creation
-                try:
-                    x = torch.randn(1000, 1000, device='cuda')
-                    y = torch.randn(1000, 1000, device='cuda')
-                    test_results['tensor_creation'] = 'PASS'
-                    print('  ✓ Tensor creation on GPU')
-                except Exception as e:
-                    test_results['tensor_creation'] = f'FAIL: {e}'
-                    log_issue('GPU', f'Tensor creation failed: {e}', 'ERROR')
-                    print(f'  ✗ Tensor creation: {e}')
-                
-                # Test 2: Matrix multiplication
-                try:
-                    z = torch.mm(x, y)
-                    test_results['matrix_multiplication'] = 'PASS'
-                    print('  ✓ Matrix multiplication on GPU')
-                except Exception as e:
-                    test_results['matrix_multiplication'] = f'FAIL: {e}'
-                    log_issue('GPU', f'Matrix multiplication failed: {e}', 'ERROR')
-                    print(f'  ✗ Matrix multiplication: {e}')
-                
-                diagnostic_data['gpu_status']['tests'] = test_results
-            else:
-                print('✗ CUDA not available in PyTorch')
-                diagnostic_data['gpu_status']['tests'] = {'cuda_available': 'NO'}
-                log_issue('GPU', 'CUDA not available in PyTorch', 'WARNING')
-        except Exception as e:
-            log_issue('GPU', f'GPU diagnostic failed: {e}', 'ERROR')
-            diagnostic_data['gpu_status']['error'] = str(e)
-        
-        # Check nvidia-smi
-        try:
-            result = subprocess.run(['nvidia-smi', '--query-gpu=name,memory.total', '--format=csv,noheader'], 
-                                  capture_output=True, text=True, timeout=5)
-            if result.returncode == 0 and result.stdout.strip():
-                diagnostic_data['gpu_status']['nvidia_smi'] = result.stdout.strip().split('\\n')
-                print(f'✓ nvidia-smi: Available')
-            else:
-                diagnostic_data['gpu_status']['nvidia_smi'] = 'No GPU detected or command failed'
-        except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.CalledProcessError):
-            diagnostic_data['gpu_status']['nvidia_smi'] = 'Command not found or timed out'
-        
-        # ==================================================
-        # 4. NESY-FACTORY STRUCTURE
-        # ==================================================
-        print('\\n' + '='*80)
-        print('NESY-FACTORY STRUCTURE')
-        print('='*80)
-        
-        # Search for nesy_factory in common locations
-        search_paths = [
-            # Python package directories
-            '/usr/local/lib/python3.10/site-packages/nesy_factory',
-            '/usr/local/lib/python3.9/site-packages/nesy_factory',
-            '/usr/local/lib/python3.8/site-packages/nesy_factory',
-            '/usr/lib/python3.10/site-packages/nesy_factory',
-            '/usr/lib/python3.9/site-packages/nesy_factory',
-            # Direct installation paths
-            '/opt/nesy_factory',
-            '/app/nesy_factory',
-            '/nesy_factory',
-            # Home directory
-            '/root/nesy_factory',
-            # Current directory
-            './nesy_factory'
+        # Common locations to check
+        search_locations = [
+            '/usr/local/lib/python3.10/site-packages',
+            '/usr/local/lib/python3.9/site-packages', 
+            '/usr/local/lib/python3.8/site-packages',
+            '/usr/lib/python3.10/site-packages',
+            '/usr/lib/python3.9/site-packages',
+            '/opt/conda/lib/python3.10/site-packages',
+            '/opt/conda/lib/python3.9/site-packages',
+            '/venv/lib/python3.10/site-packages',
+            '/venv/lib/python3.9/site-packages',
+            '/app',
+            '/root',
+            '.'
         ]
         
-        nesy_found = False
-        nesy_location = None
-        
-        for path in search_paths:
-            if os.path.exists(path):
+        print('Searching for nesy_factory...')
+        for location in search_locations:
+            nesy_test_path = os.path.join(location, 'nesy_factory')
+            if os.path.exists(nesy_test_path):
+                nesy_path = nesy_test_path
                 nesy_found = True
-                nesy_location = path
-                print(f'✓ Found nesy_factory at: {path}')
+                print(f'✓ Found at: {nesy_path}')
                 break
         
         if not nesy_found:
             print('✗ nesy_factory not found in standard locations')
-            log_issue('NESY_FACTORY', 'Package not found in standard locations', 'CRITICAL')
-            
-            # Search entire filesystem
-            print('Searching filesystem...')
+            # Try pip show
             try:
-                find_result = subprocess.run(['find', '/', '-type', 'd', '-name', '*nesy_factory*', '2>/dev/null'], 
-                                           capture_output=True, text=True, timeout=10)
-                if find_result.returncode == 0 and find_result.stdout.strip():
-                    found_paths = find_result.stdout.strip().split('\\n')
-                    if found_paths and found_paths[0]:
-                        nesy_found = True
-                        nesy_location = found_paths[0]
-                        print(f'✓ Found via find command: {nesy_location}')
+                result = subprocess.run(
+                    ['pip', 'show', '-f', 'nesy_factory'],
+                    capture_output=True, text=True, timeout=5
+                )
+                if result.returncode == 0:
+                    lines = result.stdout.split('\\n')
+                    for line in lines:
+                        if line.startswith('Location:'):
+                            nesy_path = line.split(':', 1)[1].strip()
+                            nesy_found = True
+                            print(f'✓ Found via pip: {nesy_path}')
+                            break
             except:
                 pass
         
-        diagnostic_data['nesy_factory']['found'] = nesy_found
-        diagnostic_data['nesy_factory']['location'] = nesy_location
-        
-        if nesy_found and nesy_location:
-            # Analyze structure
-            try:
-                items = os.listdir(nesy_location)
-                diagnostic_data['nesy_factory']['top_level_items'] = items
-                
-                # Check for GANs directory
-                gans_path = os.path.join(nesy_location, 'GANs')
-                if os.path.exists(gans_path):
-                    diagnostic_data['nesy_factory']['has_GANs'] = True
-                    gan_files = [f for f in os.listdir(gans_path) if f.endswith('.py')]
-                    diagnostic_data['nesy_factory']['gan_modules'] = gan_files
-                    print(f'  GAN modules: {", ".join(gan_files)}')
-                    
-                    # Check critical files
-                    critical_files = ['dcgan.py', 'vanilla_gan.py']
-                    for cf in critical_files:
-                        cf_path = os.path.join(gans_path, cf)
-                        exists = os.path.exists(cf_path)
-                        diagnostic_data['critical_files'][cf] = exists
-                        status = '✓' if exists else '✗'
-                        print(f'  {status} {cf}')
-                        
-                        if not exists:
-                            log_issue('NESY_FACTORY', f'Critical file missing: {cf}', 'CRITICAL')
-                else:
-                    diagnostic_data['nesy_factory']['has_GANs'] = False
-                    log_issue('NESY_FACTORY', 'GANs directory not found', 'CRITICAL')
-                    
-                # Check for other directories
-                for subdir in ['models', 'utils', 'data', 'configs', 'scripts']:
-                    subdir_path = os.path.join(nesy_location, subdir)
-                    diagnostic_data['nesy_factory'][f'has_{subdir}'] = os.path.exists(subdir_path)
-                    
-            except Exception as e:
-                diagnostic_data['nesy_factory']['error'] = str(e)
-                log_issue('NESY_FACTORY', f'Error analyzing structure: {e}', 'ERROR')
-        
         # ==================================================
-        # 5. FILE SYSTEM AND PERMISSIONS
+        # 3. NESY_FACTORY STRUCTURE ANALYSIS
         # ==================================================
         print('\\n' + '='*80)
-        print('FILE SYSTEM CHECK')
+        print('NESY_FACTORY STRUCTURE ANALYSIS')
         print('='*80)
         
-        critical_dirs = ['/tmp', '/usr/local', '/opt', '/app', '/root']
-        fs_checks = {}
-        
-        for dir_path in critical_dirs:
-            check = {'exists': False, 'writable': False, 'permissions': None}
-            if os.path.exists(dir_path):
-                check['exists'] = True
-                try:
-                    # Get permissions
-                    import stat
-                    st = os.stat(dir_path)
-                    check['permissions'] = oct(stat.S_IMODE(st.st_mode))
-                    
-                    # Test write
-                    test_file = os.path.join(dir_path, f'test_write_{int(time.time())}.txt')
-                    with open(test_file, 'w') as f:
-                        f.write('test')
-                    os.remove(test_file)
-                    check['writable'] = True
-                    print(f'✓ {dir_path}: Exists, writable ({check["permissions"]})')
-                except Exception as e:
-                    check['writable'] = False
-                    print(f'✗ {dir_path}: Exists, NOT writable ({check["permissions"]})')
-                    log_issue('FILESYSTEM', f'Directory not writable: {dir_path}', 'WARNING')
-            else:
-                print(f'✗ {dir_path}: Does not exist')
-            
-            fs_checks[dir_path] = check
-        
-        diagnostic_data['filesystem'] = fs_checks
-        
-        # ==================================================
-        # 6. TEST IMPORT OF NESY-FACTORY MODULES
-        # ==================================================
-        print('\\n' + '='*80)
-        print('MODULE IMPORT TESTS')
-        print('='*80)
-        
-        if nesy_found and nesy_location:
-            # Add nesy_factory to Python path
-            sys.path.insert(0, nesy_location)
-            
-            # Test importing GAN modules
-            modules_to_test = []
-            if diagnostic_data['nesy_factory'].get('has_GANs', False):
-                modules_to_test = diagnostic_data['nesy_factory'].get('gan_modules', [])
-            
-            import_tests = {}
-            
-            for module_file in modules_to_test:
-                module_name = module_file.replace('.py', '')
-                try:
-                    if diagnostic_data['nesy_factory'].get('has_GANs', False):
-                        # Try to import from GANs directory
-                        gans_module = f'nesy_factory.GANs.{module_name}'
-                        exec(f'import {gans_module}')
-                        import_tests[module_name] = 'SUCCESS'
-                        print(f'✓ Import successful: {gans_module}')
-                    else:
-                        # Try direct import
-                        module_path = os.path.join(nesy_location, 'GANs', module_file)
-                        if os.path.exists(module_path):
-                            with open(module_path, 'r') as f:
-                                exec(f.read(), globals())
-                            import_tests[module_name] = 'EXEC_SUCCESS'
-                            print(f'✓ Exec successful: {module_name}')
-                        else:
-                            import_tests[module_name] = 'FILE_NOT_FOUND'
-                            print(f'✗ File not found: {module_file}')
-                except Exception as e:
-                    import_tests[module_name] = f'FAILED: {str(e)[:100]}'
-                    log_issue('IMPORT', f'Failed to import {module_name}: {e}', 'WARNING')
-                    print(f'✗ Import failed: {module_name} - {e}')
-            
-            diagnostic_data['import_tests'] = import_tests
-        else:
-            print('Skipping import tests - nesy_factory not found')
-            diagnostic_data['import_tests'] = {'skipped': 'nesy_factory_not_found'}
-        
-        # ==================================================
-        # 7. PERFORMANCE TESTS
-        # ==================================================
-        print('\\n' + '='*80)
-        print('PERFORMANCE TESTS')
-        print('='*80)
-        
-        performance_tests = {}
-        
-        # CPU performance test
-        try:
-            import numpy as np
-            start_time = time.time()
-            # Matrix multiplication test
-            a = np.random.randn(1000, 1000)
-            b = np.random.randn(1000, 1000)
-            c = np.dot(a, b)
-            cpu_time = time.time() - start_time
-            performance_tests['cpu_matrix_mul'] = {
-                'time_seconds': round(cpu_time, 3),
-                'matrix_size': '1000x1000',
-                'status': 'PASS'
-            }
-            print(f'✓ CPU Matrix multiplication: {cpu_time:.3f}s')
-        except Exception as e:
-            performance_tests['cpu_matrix_mul'] = {
-                'time_seconds': None,
-                'error': str(e),
-                'status': 'FAIL'
-            }
-            print(f'✗ CPU test failed: {e}')
-        
-        # GPU performance test (if available)
-        if diagnostic_data['gpu_status'].get('pytorch_cuda_available', False):
-            try:
-                import torch
-                torch.cuda.synchronize()
-                start_time = time.time()
-                a_gpu = torch.randn(1000, 1000, device='cuda')
-                b_gpu = torch.randn(1000, 1000, device='cuda')
-                c_gpu = torch.mm(a_gpu, b_gpu)
-                torch.cuda.synchronize()
-                gpu_time = time.time() - start_time
-                
-                performance_tests['gpu_matrix_mul'] = {
-                    'time_seconds': round(gpu_time, 3),
-                    'matrix_size': '1000x1000',
-                    'speedup': round(cpu_time / gpu_time, 2) if cpu_time else None,
-                    'status': 'PASS'
-                }
-                print(f'✓ GPU Matrix multiplication: {gpu_time:.3f}s')
-                if cpu_time:
-                    print(f'  Speedup: {cpu_time/gpu_time:.2f}x')
-            except Exception as e:
-                performance_tests['gpu_matrix_mul'] = {
-                    'time_seconds': None,
-                    'error': str(e),
-                    'status': 'FAIL'
-                }
-                log_issue('PERFORMANCE', f'GPU performance test failed: {e}', 'WARNING')
-                print(f'✗ GPU test failed: {e}')
-        
-        diagnostic_data['performance_tests'] = performance_tests
-        
-        # ==================================================
-        # 8. GENERATE SUMMARY AND RECOMMENDATIONS
-        # ==================================================
-        print('\\n' + '='*80)
-        print('DIAGNOSTIC SUMMARY')
-        print('='*80)
-        
-        # Generate overall status
-        summary = {
-            'overall_status': 'PASS',
-            'critical_issues': 0,
-            'warnings': 0,
-            'checks_passed': 0
+        nesy_analysis = {
+            'found': nesy_found,
+            'path': nesy_path,
+            'structure': {},
+            'modules': {},
+            'importable': False,
+            'import_errors': []
         }
         
-        # Count issues
-        for issue in diagnostic_data['issues']:
-            if issue['severity'] == 'CRITICAL':
-                summary['critical_issues'] += 1
-                summary['overall_status'] = 'FAIL'
-            elif issue['severity'] == 'ERROR':
-                summary['critical_issues'] += 1
-                summary['overall_status'] = 'FAIL'
-            elif issue['severity'] == 'WARNING':
-                summary['warnings'] += 1
-        
-        # Generate recommendations
-        recommendations = []
-        
-        if not diagnostic_data['nesy_factory']['found']:
-            recommendations.append({
-                'priority': 'HIGH',
-                'action': 'Install nesy_factory package',
-                'details': 'Package not found in container. Install using: pip install nesy_factory or check Dockerfile'
-            })
-        
-        if not diagnostic_data['gpu_status'].get('pytorch_cuda_available', False):
-            recommendations.append({
-                'priority': 'MEDIUM',
-                'action': 'Enable GPU support',
-                'details': 'CUDA not available. Check GPU drivers and PyTorch CUDA installation'
-            })
-        
-        if diagnostic_data['issues']:
-            recommendations.append({
-                'priority': 'MEDIUM',
-                'action': 'Resolve reported issues',
-                'details': f'Found {len(diagnostic_data["issues"])} issues in diagnostic'
-            })
-        
-        # Check for critical GAN files
-        missing_critical = []
-        for file, exists in diagnostic_data.get('critical_files', {}).items():
-            if not exists:
-                missing_critical.append(file)
-        
-        if missing_critical:
-            recommendations.append({
-                'priority': 'HIGH',
-                'action': 'Add missing GAN modules',
-                'details': f'Missing critical files: {", ".join(missing_critical)}'
-            })
-        
-        diagnostic_data['summary'] = summary
-        diagnostic_data['recommendations'] = recommendations
+        if nesy_found and nesy_path:
+            # Add to Python path for import testing
+            if nesy_path not in sys.path:
+                sys.path.insert(0, nesy_path)
+                print(f'Added to Python path: {nesy_path}')
+            
+            # Analyze directory structure
+            try:
+                for root, dirs, files in os.walk(nesy_path):
+                    rel_root = os.path.relpath(root, nesy_path)
+                    if rel_root == '.':
+                        rel_root = ''
+                    
+                    # Skip __pycache__ and other hidden directories
+                    dirs[:] = [d for d in dirs if not d.startswith('.') and d != '__pycache__']
+                    
+                    # Get Python files
+                    py_files = [f for f in files if f.endswith('.py')]
+                    if py_files:
+                        nesy_analysis['structure'][rel_root if rel_root else 'root'] = py_files
+            
+            except Exception as e:
+                nesy_analysis['import_errors'].append(f'Directory walk error: {e}')
+            
+            # Check for key directories
+            key_dirs = ['GANs', 'CNNs', 'models', 'utils', 'data', 'configs']
+            for dir_name in key_dirs:
+                dir_path = os.path.join(nesy_path, dir_name)
+                nesy_analysis['modules'][dir_name] = os.path.exists(dir_path)
+                status = '✓' if os.path.exists(dir_path) else '✗'
+                print(f'{status} {dir_name}/')
+            
+            # Specifically check GANs directory
+            gans_path = os.path.join(nesy_path, 'GANs')
+            if os.path.exists(gans_path):
+                print('\\nGANs module contents:')
+                try:
+                    gan_files = [f for f in os.listdir(gans_path) if f.endswith('.py')]
+                    for f in gan_files:
+                        print(f'  - {f}')
+                    nesy_analysis['modules']['GANs_files'] = gan_files
+                except:
+                    print('  Could not list GANs files')
+            
+            # ==================================================
+            # 4. IMPORT TESTING
+            # ==================================================
+            print('\\n' + '='*80)
+            print('IMPORT TESTING')
+            print('='*80)
+            
+            # Test basic import
+            try:
+                import nesy_factory
+                nesy_analysis['importable'] = True
+                print('✓ import nesy_factory: SUCCESS')
+            except Exception as e:
+                nesy_analysis['importable'] = False
+                nesy_analysis['import_errors'].append(f'nesy_factory import: {e}')
+                print(f'✗ import nesy_factory: FAILED - {e}')
+            
+            # Test GANs import
+            if os.path.exists(gans_path):
+                try:
+                    from nesy_factory.GANs import __init__ as gans_init
+                    print('✓ from nesy_factory.GANs import *: SUCCESS')
+                    nesy_analysis['modules']['GANs_importable'] = True
+                    
+                    # Check what's exported
+                    if hasattr(gans_init, '__all__'):
+                        print(f'  Available exports: {gans_init.__all__}')
+                        nesy_analysis['modules']['GANs_exports'] = gans_init.__all__
+                    
+                except Exception as e:
+                    nesy_analysis['modules']['GANs_importable'] = False
+                    nesy_analysis['import_errors'].append(f'GANs import: {e}')
+                    print(f'✗ GANs import: FAILED - {e}')
+                
+                # Try to import specific GAN modules
+                gan_modules_to_test = ['dcgan', 'vanilla_gan']
+                for module_name in gan_modules_to_test:
+                    module_path = os.path.join(gans_path, f'{module_name}.py')
+                    if os.path.exists(module_path):
+                        try:
+                            # Try direct exec to see what's in the file
+                            with open(module_path, 'r') as f:
+                                content = f.read()
+                                # Look for class definitions
+                                classes = []
+                                for line in content.split('\\n'):
+                                    if line.strip().startswith('class '):
+                                        class_name = line.split('class ')[1].split('(')[0].strip()
+                                        classes.append(class_name)
+                                if classes:
+                                    print(f'  ✓ {module_name}.py contains: {classes[:3]}...')
+                                    nesy_analysis['modules'][f'{module_name}_classes'] = classes[:5]
+                        except:
+                            pass
         
         # ==================================================
-        # 9. SAVE OUTPUTS
+        # 5. ALTERNATIVE ACCESS METHODS
         # ==================================================
         print('\\n' + '='*80)
-        print('SAVING DIAGNOSTIC OUTPUTS')
+        print('ALTERNATIVE ACCESS METHODS')
         print('='*80)
         
-        # Save full diagnostic report
-        with open(args.diagnostic_report, 'w') as f:
-            json.dump(diagnostic_data, f, indent=2, default=str)
-        print(f'✓ Diagnostic report saved to: {args.diagnostic_report}')
+        access_methods = []
         
-        # Save GPU status
-        with open(args.gpu_status, 'w') as f:
-            json.dump(diagnostic_data['gpu_status'], f, indent=2)
-        print(f'✓ GPU status saved to: {args.gpu_status}')
+        # Method 1: Direct file reading
+        if nesy_found:
+            access_methods.append({
+                'method': 'Direct file reading',
+                'description': 'Read and exec Python files directly',
+                'example': '''
+                # Read and execute a module
+                with open("/path/to/nesy_factory/GANs/dcgan.py", "r") as f:
+                    code = f.read()
+                exec(code, globals())
+                # Now DCGAN class is available
+                ''',
+                'pros': 'No import needed, works even with broken imports',
+                'cons': 'Less safe, manual dependency management'
+            })
         
-        # Save Python environment
-        with open(args.python_environment, 'w') as f:
-            json.dump(diagnostic_data['python_environment'], f, indent=2)
-        print(f'✓ Python environment saved to: {args.python_environment}')
+        # Method 2: Dynamic import
+        access_methods.append({
+            'method': 'Dynamic import',
+            'description': 'Use importlib to import modules',
+            'example': '''
+                import importlib.util
+                import sys
+                
+                # Add nesy_factory to path
+                sys.path.insert(0, "/path/to/nesy_factory")
+                
+                # Import module
+                spec = importlib.util.spec_from_file_location(
+                    "dcgan", 
+                    "/path/to/nesy_factory/GANs/dcgan.py"
+                )
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                # Now use module.DCGAN
+            ''',
+            'pros': 'More control over imports',
+            'cons': 'More verbose'
+        })
         
-        # Save nesy_factory structure
-        with open(args.nesy_structure, 'w') as f:
-            json.dump(diagnostic_data['nesy_factory'], f, indent=2)
-        print(f'✓ nesy_factory structure saved to: {args.nesy_structure}')
+        # Method 3: Copy and use locally
+        access_methods.append({
+            'method': 'Copy and modify',
+            'description': 'Copy needed files to local directory and fix imports',
+            'example': '''
+                import shutil
+                import os
+                
+                # Copy GANs directory
+                shutil.copytree("/path/to/nesy_factory/GANs", "./local_gans")
+                
+                # Modify imports in copied files
+                # Replace "from nesy_factory." with local imports
+                # Then import normally
+            ''',
+            'pros': 'Full control, can fix broken dependencies',
+            'cons': 'Requires file modification'
+        })
         
-        # Generate human-readable summary
-        summary_text = f'''
-        ========================================================
-        CONTAINER DIAGNOSTIC SUMMARY
-        ========================================================
-        Timestamp: {diagnostic_data['timestamp']}
-        Dummy Input: {diagnostic_data['dummy_input']}
-        Overall Status: {summary['overall_status']}
-        
-        SYSTEM OVERVIEW:
-        ----------------
-        Platform: {diagnostic_data['system'].get('platform', 'N/A')}
-        Python: {diagnostic_data['system'].get('python_version', 'N/A')}
-        
-        GPU STATUS:
-        -----------
-        CUDA Available: {diagnostic_data['gpu_status'].get('pytorch_cuda_available', False)}
-        GPU Count: {diagnostic_data['gpu_status'].get('device_count', 0)}
-        
-        NESY_FACTORY:
-        -------------
-        Found: {diagnostic_data['nesy_factory'].get('found', False)}
-        Location: {diagnostic_data['nesy_factory'].get('location', 'Not found')}
-        GAN Modules: {', '.join(diagnostic_data['nesy_factory'].get('gan_modules', [])) if diagnostic_data['nesy_factory'].get('gan_modules') else 'None'}
-        
-        ISSUES SUMMARY:
-        ---------------
-        Critical Issues: {summary['critical_issues']}
-        Warnings: {summary['warnings']}
-        
-        ISSUES DETECTED:
-        '''
-        
-        for issue in diagnostic_data['issues']:
-            severity = issue['severity']
-            category = issue['category']
-            message = issue['message']
-            summary_text += f'  [{severity}] {category}: {message}\\n'
-        
-        summary_text += '''
-        RECOMMENDATIONS:
-        '''
-        
-        for i, rec in enumerate(recommendations, 1):
-            priority = rec['priority']
-            action = rec['action']
-            details = rec['details']
-            summary_text += f'  {i}. [{priority}] {action}: {details}\\n'
-        
-        summary_text += '''
-        NEXT STEPS:
-        -----------
-        1. Review critical issues above
-        2. Implement recommendations
-        3. Run diagnostic again after fixes
-        
-        ========================================================
-        '''
-        
-        with open(args.diagnostic_summary, 'w') as f:
-            f.write(summary_text)
-        print(f'✓ Diagnostic summary saved to: {args.diagnostic_summary}')
-        
-        # Print final status
+        # ==================================================
+        # 6. CREATE IMPORT GUIDE
+        # ==================================================
         print('\\n' + '='*80)
-        print('DIAGNOSTIC COMPLETED')
+        print('CREATING IMPORT GUIDE')
         print('='*80)
-        print(f'Overall Status: {summary["overall_status"]}')
-        print(f'Critical Issues: {summary["critical_issues"]}')
-        print(f'Warnings: {summary["warnings"]}')
-        print(f'nesy_factory Found: {nesy_found}')
-        print(f'CUDA Available: {diagnostic_data["gpu_status"].get("pytorch_cuda_available", False)}')
-        print('\\nCheck the output files for detailed results.')
+        
+        import_guide = {
+            'summary': f'nesy_factory found: {nesy_found}',
+            'location': nesy_path,
+            'recommended_methods': [],
+            'code_examples': {}
+        }
+        
+        if nesy_found:
+            # Guide for using found nesy_factory
+            import_guide['recommended_methods'].append('Add to sys.path and import')
+            import_guide['code_examples']['basic_import'] = f'''
+            # Add to Python path
+            import sys
+            sys.path.insert(0, "{nesy_path}")
+            
+            # Try importing
+            try:
+                import nesy_factory
+                print("Successfully imported nesy_factory")
+            except Exception as e:
+                print(f"Import failed: {{e}}")
+            
+            # Try importing GANs
+            try:
+                from nesy_factory.GANs import *
+                print("GANs imported successfully")
+                # Check what's available
+                print(f"Available: {{__all__ if '__all__' in locals() else 'Unknown'}}")
+            except Exception as e:
+                print(f"GANs import failed: {{e}}")
+            '''
+            
+            # If GANs directory exists
+            gans_dir = os.path.join(nesy_path, 'GANs') if nesy_path else None
+            if gans_dir and os.path.exists(gans_dir):
+                import_guide['recommended_methods'].append('Direct GANs module access')
+                import_guide['code_examples']['gans_direct'] = f'''
+                # Method 1: Direct file execution
+                import sys
+                sys.path.insert(0, "{os.path.dirname(gans_dir)}")
+                
+                # Execute dcgan.py directly
+                with open("{os.path.join(gans_dir, 'dcgan.py')}", "r") as f:
+                    dcgan_code = f.read()
+                
+                # Execute in a namespace
+                namespace = {{}}
+                exec(dcgan_code, namespace)
+                
+                # Now you can access DCGAN class
+                if 'DCGAN' in namespace:
+                    print("DCGAN class available")
+                    DCGAN = namespace['DCGAN']
+                '''
+                
+                # Check for specific classes in files
+                for gan_file in ['dcgan.py', 'vanilla_gan.py']:
+                    file_path = os.path.join(gans_dir, gan_file)
+                    if os.path.exists(file_path):
+                        try:
+                            with open(file_path, 'r') as f:
+                                content = f.read()
+                                # Look for class definitions
+                                classes_found = []
+                                for line in content.split('\\n'):
+                                    if line.strip().startswith('class '):
+                                        class_name = line.split('class ')[1].split('(')[0].strip()
+                                        classes_found.append(class_name)
+                                
+                                if classes_found:
+                                    import_guide['code_examples'][f'{gan_file}_classes'] = {
+                                        'file': gan_file,
+                                        'classes': classes_found,
+                                        'import_example': f'''
+                                        # To use classes from {gan_file}
+                                        with open("{file_path}", "r") as f:
+                                            code = f.read()
+                                        exec(code)
+                                        # Now {classes_found[0]} is available
+                                        '''
+                                    }
+                        except:
+                            pass
+        
+        else:
+            # Guide for missing nesy_factory
+            import_guide['recommended_methods'].append('Install missing package')
+            import_guide['code_examples']['install'] = '''
+            # Option 1: Install via pip (if available in PyPI)
+            # pip install nesy_factory
+            
+            # Option 2: Clone and install from source
+            # git clone https://github.com/username/nesy_factory.git
+            # cd nesy_factory
+            # pip install -e .
+            
+            # Option 3: Copy from another container
+            # docker cp <container_id>:/usr/local/lib/python3.10/site-packages/nesy_factory ./nesy_factory
+            '''
+            
+            import_guide['recommended_methods'].append('Use alternative implementations')
+            import_guide['code_examples']['alternative'] = '''
+            # If nesy_factory is not available, you can:
+            # 1. Use standard PyTorch GAN implementations
+            # 2. Copy the GAN code you need into your project
+            # 3. Use a different container that has nesy_factory
+            '''
+        
+        # ==================================================
+        # 7. CHECK DEPENDENCIES
+        # ==================================================
+        print('\\n' + '='*80)
+        print('DEPENDENCY CHECK')
+        print('='*80)
+        
+        dependencies = {
+            'torch': None,
+            'torchvision': None,
+            'numpy': None,
+            'PIL': None,
+            'scipy': None
+        }
+        
+        missing_deps = []
+        
+        for dep in dependencies.keys():
+            try:
+                module = __import__(dep)
+                dependencies[dep] = {
+                    'version': getattr(module, '__version__', 'unknown'),
+                    'available': True
+                }
+                print(f'✓ {dep}: {dependencies[dep]["version"]}')
+            except ImportError as e:
+                dependencies[dep] = {
+                    'available': False,
+                    'error': str(e)
+                }
+                missing_deps.append(dep)
+                print(f'✗ {dep}: MISSING')
+        
+        # ==================================================
+        # 8. SAVE RESULTS
+        # ==================================================
+        print('\\n' + '='*80)
+        print('SAVING ANALYSIS RESULTS')
+        print('='*80)
+        
+        # Create output directory structure
+        os.makedirs(os.path.dirname(args.container_structure), exist_ok=True)
+        os.makedirs(os.path.dirname(args.nesy_analysis), exist_ok=True)
+        os.makedirs(os.path.dirname(args.import_guide), exist_ok=True)
+        os.makedirs(os.path.dirname(args.missing_deps), exist_ok=True)
+        
+        # Save container structure
+        with open(args.container_structure, 'w') as f:
+            json.dump({
+                'python_info': path_info,
+                'nesy_factory_found': nesy_found,
+                'nesy_path': nesy_path,
+                'dependencies': dependencies
+            }, f, indent=2)
+        print(f'✓ Container structure saved to: {args.container_structure}')
+        
+        # Save nesy analysis
+        with open(args.nesy_analysis, 'w') as f:
+            json.dump(nesy_analysis, f, indent=2)
+        print(f'✓ nesy_factory analysis saved to: {args.nesy_analysis}')
+        
+        # Save import guide
+        with open(args.import_guide, 'w') as f:
+            json.dump(import_guide, f, indent=2)
+        print(f'✓ Import guide saved to: {args.import_guide}')
+        
+        # Save missing dependencies
+        with open(args.missing_deps, 'w') as f:
+            json.dump({
+                'missing': missing_deps,
+                'dependencies': dependencies,
+                'recommendations': [
+                    f'Install missing: pip install {" ".join(missing_deps)}' if missing_deps else 'All dependencies available'
+                ]
+            }, f, indent=2)
+        print(f'✓ Missing dependencies saved to: {args.missing_deps}')
+        
+        # ==================================================
+        # 9. PRINT SUMMARY
+        # ==================================================
+        print('\\n' + '='*80)
+        print('ANALYSIS SUMMARY')
+        print('='*80)
+        print(f'nesy_factory found: {nesy_found}')
+        print(f'Location: {nesy_path or "Not found"}')
+        print(f'Importable: {nesy_analysis.get("importable", False)}')
+        print(f'GANs directory: {os.path.exists(os.path.join(nesy_path, "GANs")) if nesy_path else False}')
+        print(f'Missing dependencies: {missing_deps}')
+        
+        if nesy_found:
+            print('\\nRECOMMENDED APPROACH:')
+            print('1. Add nesy_factory to Python path:')
+            print(f'   sys.path.insert(0, "{nesy_path}")')
+            print('2. Try importing:')
+            print('   from nesy_factory.GANs import *')
+            print('3. Or use direct file execution for specific modules')
+        else:
+            print('\\nRECOMMENDED APPROACH:')
+            print('1. Install nesy_factory package')
+            print('2. Use a different container with nesy_factory')
+            print('3. Copy GAN implementation files manually')
+        
+        print('\\nAnalysis complete!')
         
     args:
       - --dummy_input
       - {inputValue: dummy_input}
-      - --diagnostic_report
-      - {outputPath: diagnostic_report}
-      - --gpu_status
-      - {outputPath: gpu_status}
-      - --python_environment
-      - {outputPath: python_environment}
-      - --nesy_structure
-      - {outputPath: nesy_structure}
-      - --diagnostic_summary
-      - {outputPath: diagnostic_summary}
+      - --container_structure
+      - /tmp/container_structure.json
+      - --nesy_analysis
+      - /tmp/nesy_analysis.json
+      - --import_guide
+      - /tmp/import_guide.json
+      - --missing_deps
+      - /tmp/missing_deps.json
