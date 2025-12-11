@@ -1,4 +1,4 @@
-name: ssss Build
+name: Build
 description: Builds GAN model using master config
 inputs:
   - name: gan_config_json
@@ -130,7 +130,6 @@ implementation:
         
         # Architecture calculation function
         def calculate_dcgan_architecture(image_size, channels):
-            """Calculate DCGAN architecture for given image size"""
             print(f"Calculating architecture for {image_size}x{image_size} images...")
             
             # Generator: Start from 4x4, double until we reach target
