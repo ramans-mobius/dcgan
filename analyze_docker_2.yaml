@@ -1,9 +1,10 @@
-name: Container Structure Analyzer
+name: 2 Container Structure Analyzer
 description: Analyzes container structure, checks nesy_factory availability, and maps accessible libraries
 inputs:
   - name: dummy_input
     type: String
     description: Dummy input for analysis
+    default: "analyze_container"
 outputs:
   - name: container_structure
     type: String
@@ -92,6 +93,7 @@ implementation:
         print('='*80)
         
         def find_package_location(package_name):
+     
             try:
                 spec = importlib.util.find_spec(package_name)
                 if spec and spec.origin:
@@ -239,12 +241,6 @@ implementation:
                     if hasattr(gans_init, '__all__'):
                         print(f'  Available exports: {gans_init.__all__}')
                         nesy_analysis['modules']['GANs_exports'] = gans_init.__all__
-
-
-                                            # Check what's exported
-                    if hasattr(gans_init, '__all__'):
-                        print(f'  Available exports: {gans_init.__all__}')
-                        nesy_analysis['modules']['GANs_exports'] = gans_init.__all__'
                     
                 except Exception as e:
                     nesy_analysis['modules']['GANs_importable'] = False
@@ -431,7 +427,7 @@ implementation:
                                         classes_found.append(class_name)
                                 
                                 if classes_found:
-                                    import_guide['code_examples'][f'{gan_file}_classes'] = {{
+                                    import_guide['code_examples'][f'{gan_file}_classes'] = {
                                         'file': gan_file,
                                         'classes': classes_found,
                                         'import_example': f'''
@@ -444,7 +440,7 @@ implementation:
                                         exec(code)
                                         # Now {classes_found[0]} is available
                                         '''
-                                    }}
+                                    }
                         except Exception as e:
                             print(f'Error analyzing {gan_file}: {e}')
         
@@ -556,10 +552,18 @@ implementation:
         
         # Copy outputs to expected paths
         import shutil
-        shutil.copy(container_structure_path, args.container_structure)
-        shutil.copy(nesy_analysis_path, args.nesy_analysis)
-        shutil.copy(import_guide_path, args.import_guide)
-        shutil.copy(missing_deps_path, args.missing_deps)
+        try:
+            shutil.copy(container_structure_path, args.container_structure)
+            shutil.copy(nesy_analysis_path, args.nesy_analysis)
+            shutil.copy(import_guide_path, args.import_guide)
+            shutil.copy(missing_deps_path, args.missing_deps)
+            print('✓ All outputs copied to expected paths')
+        except Exception as e:
+            print(f'Warning: Could not copy outputs: {e}')
+            # Create empty files if copying fails
+            for path in [args.container_structure, args.nesy_analysis, args.import_guide, args.missing_deps]:
+                with open(path, 'w') as f:
+                    json.dump({'error': 'Output generation failed'}, f)
         
         # ==================================================
         # 9. PRINT SUMMARY
