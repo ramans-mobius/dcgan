@@ -55,6 +55,16 @@ implementation:
         
         print(f'Starting analysis with input: {args.dummy_input}')
         
+        # Create output directories
+        output_dir = '/tmp/container_analysis'
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Define output paths
+        container_structure_path = os.path.join(output_dir, 'container_structure.json')
+        nesy_analysis_path = os.path.join(output_dir, 'nesy_analysis.json')
+        import_guide_path = os.path.join(output_dir, 'import_guide.json')
+        missing_deps_path = os.path.join(output_dir, 'missing_deps.json')
+        
         # ==================================================
         # 1. SYSTEM PATH ANALYSIS
         # ==================================================
@@ -219,14 +229,22 @@ implementation:
             # Test GANs import
             if os.path.exists(gans_path):
                 try:
-                    from nesy_factory.GANs import __init__ as gans_init
-                    print('✓ from nesy_factory.GANs import *: SUCCESS')
+                    # Try to import GANs module
+                    sys.path.insert(0, os.path.dirname(gans_path))
+                    from GANs import __init__ as gans_init
+                    print('✓ from GANs import *: SUCCESS')
                     nesy_analysis['modules']['GANs_importable'] = True
                     
                     # Check what's exported
                     if hasattr(gans_init, '__all__'):
                         print(f'  Available exports: {gans_init.__all__}')
                         nesy_analysis['modules']['GANs_exports'] = gans_init.__all__
+
+
+                                            # Check what's exported
+                    if hasattr(gans_init, '__all__'):
+                        print(f'  Available exports: {gans_init.__all__}')
+                        nesy_analysis['modules']['GANs_exports'] = gans_init.__all__'
                     
                 except Exception as e:
                     nesy_analysis['modules']['GANs_importable'] = False
@@ -251,8 +269,8 @@ implementation:
                                 if classes:
                                     print(f'  ✓ {module_name}.py contains: {classes[:3]}...')
                                     nesy_analysis['modules'][f'{module_name}_classes'] = classes[:5]
-                        except:
-                            pass
+                        except Exception as e:
+                            print(f'  Could not read {module_name}.py: {e}')
         
         # ==================================================
         # 5. ALTERNATIVE ACCESS METHODS
@@ -268,12 +286,21 @@ implementation:
             access_methods.append({
                 'method': 'Direct file reading',
                 'description': 'Read and exec Python files directly',
-                'example': '''
+                'example': f'''
                 # Read and execute a module
-                with open("/path/to/nesy_factory/GANs/dcgan.py", "r") as f:
+                import sys
+                sys.path.insert(0, "{nesy_path}")
+                
+                with open("{nesy_path}/GANs/dcgan.py", "r") as f:
                     code = f.read()
-                exec(code, globals())
-                # Now DCGAN class is available
+                
+                # Execute in isolated namespace
+                namespace = {{}}
+                exec(code, namespace)
+                
+                # Now classes are available
+                if "DCGAN" in namespace:
+                    model = namespace["DCGAN"](config)
                 ''',
                 'pros': 'No import needed, works even with broken imports',
                 'cons': 'Less safe, manual dependency management'
@@ -297,7 +324,9 @@ implementation:
                 )
                 module = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(module)
+                
                 # Now use module.DCGAN
+                DCGAN = module.DCGAN
             ''',
             'pros': 'More control over imports',
             'cons': 'More verbose'
@@ -315,8 +344,10 @@ implementation:
                 shutil.copytree("/path/to/nesy_factory/GANs", "./local_gans")
                 
                 # Modify imports in copied files
-                # Replace "from nesy_factory." with local imports
                 # Then import normally
+                import sys
+                sys.path.insert(0, "./local_gans")
+                from dcgan import DCGAN
             ''',
             'pros': 'Full control, can fix broken dependencies',
             'cons': 'Requires file modification'
@@ -356,7 +387,8 @@ implementation:
                 from nesy_factory.GANs import *
                 print("GANs imported successfully")
                 # Check what's available
-                print(f"Available: {{__all__ if '__all__' in locals() else 'Unknown'}}")
+                if "__all__" in locals():
+                    print(f"Available: {{__all__}}")
             except Exception as e:
                 print(f"GANs import failed: {{e}}")
             '''
@@ -399,19 +431,22 @@ implementation:
                                         classes_found.append(class_name)
                                 
                                 if classes_found:
-                                    import_guide['code_examples'][f'{gan_file}_classes'] = {
+                                    import_guide['code_examples'][f'{gan_file}_classes'] = {{
                                         'file': gan_file,
                                         'classes': classes_found,
                                         'import_example': f'''
                                         # To use classes from {gan_file}
+                                        import sys
+                                        sys.path.insert(0, "{gans_dir}")
+                                        
                                         with open("{file_path}", "r") as f:
                                             code = f.read()
                                         exec(code)
                                         # Now {classes_found[0]} is available
                                         '''
-                                    }
-                        except:
-                            pass
+                                    }}
+                        except Exception as e:
+                            print(f'Error analyzing {gan_file}: {e}')
         
         else:
             # Guide for missing nesy_factory
@@ -470,6 +505,16 @@ implementation:
                 missing_deps.append(dep)
                 print(f'✗ {dep}: MISSING')
         
+        # Check for additional GAN dependencies
+        gan_deps = ['torch.nn', 'torch.optim', 'torch.utils.data']
+        for dep in gan_deps:
+            try:
+                module_name = dep.split('.')[0]
+                __import__(module_name)
+                print(f'✓ {dep}: Available')
+            except ImportError:
+                print(f'✗ {dep}: Missing')
+        
         # ==================================================
         # 8. SAVE RESULTS
         # ==================================================
@@ -477,34 +522,29 @@ implementation:
         print('SAVING ANALYSIS RESULTS')
         print('='*80)
         
-        # Create output directory structure
-        os.makedirs(os.path.dirname(args.container_structure), exist_ok=True)
-        os.makedirs(os.path.dirname(args.nesy_analysis), exist_ok=True)
-        os.makedirs(os.path.dirname(args.import_guide), exist_ok=True)
-        os.makedirs(os.path.dirname(args.missing_deps), exist_ok=True)
-        
         # Save container structure
-        with open(args.container_structure, 'w') as f:
+        with open(container_structure_path, 'w') as f:
             json.dump({
                 'python_info': path_info,
                 'nesy_factory_found': nesy_found,
                 'nesy_path': nesy_path,
-                'dependencies': dependencies
+                'dependencies': dependencies,
+                'timestamp': os.path.getmtime('/proc/uptime') if os.path.exists('/proc/uptime') else None
             }, f, indent=2)
-        print(f'✓ Container structure saved to: {args.container_structure}')
+        print(f'✓ Container structure saved to: {container_structure_path}')
         
         # Save nesy analysis
-        with open(args.nesy_analysis, 'w') as f:
+        with open(nesy_analysis_path, 'w') as f:
             json.dump(nesy_analysis, f, indent=2)
-        print(f'✓ nesy_factory analysis saved to: {args.nesy_analysis}')
+        print(f'✓ nesy_factory analysis saved to: {nesy_analysis_path}')
         
         # Save import guide
-        with open(args.import_guide, 'w') as f:
+        with open(import_guide_path, 'w') as f:
             json.dump(import_guide, f, indent=2)
-        print(f'✓ Import guide saved to: {args.import_guide}')
+        print(f'✓ Import guide saved to: {import_guide_path}')
         
         # Save missing dependencies
-        with open(args.missing_deps, 'w') as f:
+        with open(missing_deps_path, 'w') as f:
             json.dump({
                 'missing': missing_deps,
                 'dependencies': dependencies,
@@ -512,7 +552,14 @@ implementation:
                     f'Install missing: pip install {" ".join(missing_deps)}' if missing_deps else 'All dependencies available'
                 ]
             }, f, indent=2)
-        print(f'✓ Missing dependencies saved to: {args.missing_deps}')
+        print(f'✓ Missing dependencies saved to: {missing_deps_path}')
+        
+        # Copy outputs to expected paths
+        import shutil
+        shutil.copy(container_structure_path, args.container_structure)
+        shutil.copy(nesy_analysis_path, args.nesy_analysis)
+        shutil.copy(import_guide_path, args.import_guide)
+        shutil.copy(missing_deps_path, args.missing_deps)
         
         # ==================================================
         # 9. PRINT SUMMARY
@@ -523,7 +570,13 @@ implementation:
         print(f'nesy_factory found: {nesy_found}')
         print(f'Location: {nesy_path or "Not found"}')
         print(f'Importable: {nesy_analysis.get("importable", False)}')
-        print(f'GANs directory: {os.path.exists(os.path.join(nesy_path, "GANs")) if nesy_path else False}')
+        if nesy_path:
+            gans_exists = os.path.exists(os.path.join(nesy_path, 'GANs'))
+            print(f'GANs directory: {gans_exists}')
+            if gans_exists:
+                gan_files = os.listdir(os.path.join(nesy_path, 'GANs'))
+                gan_py_files = [f for f in gan_files if f.endswith('.py')]
+                print(f'GAN Python files: {len(gan_py_files)} files')
         print(f'Missing dependencies: {missing_deps}')
         
         if nesy_found:
@@ -533,11 +586,18 @@ implementation:
             print('2. Try importing:')
             print('   from nesy_factory.GANs import *')
             print('3. Or use direct file execution for specific modules')
+            print('   Example: Read and exec dcgan.py directly')
         else:
             print('\\nRECOMMENDED APPROACH:')
             print('1. Install nesy_factory package')
             print('2. Use a different container with nesy_factory')
             print('3. Copy GAN implementation files manually')
+        
+        print('\\nANALYSIS OUTPUT FILES:')
+        print(f'  Container structure: {container_structure_path}')
+        print(f'  nesy_factory analysis: {nesy_analysis_path}')
+        print(f'  Import guide: {import_guide_path}')
+        print(f'  Missing deps: {missing_deps_path}')
         
         print('\\nAnalysis complete!')
         
@@ -545,10 +605,10 @@ implementation:
       - --dummy_input
       - {inputValue: dummy_input}
       - --container_structure
-      - /tmp/container_structure.json
+      - {outputPath: container_structure}
       - --nesy_analysis
-      - /tmp/nesy_analysis.json
+      - {outputPath: nesy_analysis}
       - --import_guide
-      - /tmp/import_guide.json
+      - {outputPath: import_guide}
       - --missing_deps
-      - /tmp/missing_deps.json
+      - {outputPath: missing_deps}
