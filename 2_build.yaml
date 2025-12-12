@@ -1,4 +1,4 @@
-name: Build
+name: 2 Build
 description: Builds GAN model using master config, validates architecture, and auto-corrects if needed
 inputs:
   - name: gan_config_json
@@ -121,7 +121,7 @@ implementation:
             print(f"✗ Failed to import torch: {e}")
             sys.exit(1)
         
-        # Architecture calculation function
+        # Architecture calculation function (KEEP THIS - it's important!)
         def calculate_dcgan_architecture(image_size, channels):
             print(f"Calculating architecture for {image_size}x{image_size} images...")
             
@@ -166,7 +166,7 @@ implementation:
         print(f"  Generator layers: {expected_gen_layers}")
         print(f"  Discriminator layers: {expected_disc_layers}")
         
-        # Function to validate generator output size
+        # Function to validate generator output size (KEEP THIS!)
         def validate_generator_output(generator_layers, image_size, channels):
             # DCGAN starts from 4x4 and doubles for each layer (except output)
             start_size = 4
@@ -175,7 +175,7 @@ implementation:
                 output_size *= 2
             return output_size
         
-        # Check if current layers will produce correct output
+        # Check if current layers will produce correct output (KEEP THIS!)
         if model_type == 'dcgan' and generator_layers:
             calculated_size = validate_generator_output(generator_layers, image_size, channels)
             print(f"\\n--- VALIDATING ARCHITECTURE ---")
@@ -188,7 +188,7 @@ implementation:
                 print(f"  Current layers produce {calculated_size}x{calculated_size}")
                 print(f"  But dataset expects {image_size}x{image_size}")
                 
-                # Auto-correct the layers
+                # Auto-correct the layers (KEEP THIS!)
                 print(f"\\n--- AUTO-CORRECTING ARCHITECTURE ---")
                 print(f"Updating generator layers: {generator_layers} -> {expected_gen_layers}")
                 print(f"Updating discriminator layers: {discriminator_layers} -> {expected_disc_layers}")
@@ -215,11 +215,57 @@ implementation:
         print(f"LOADING {model_type.upper()} MODULE")
         print("="*80)
         
+        # Function to find nesy_factory path (IMPROVED - searches multiple locations)
+        def find_nesy_factory_path():
+            search_paths = [
+                # Python 3.10 paths
+                "/usr/local/lib/python3.10/site-packages/nesy_factory/GANs",
+                "/usr/lib/python3.10/site-packages/nesy_factory/GANs",
+                # Python 3.9 paths
+                "/usr/local/lib/python3.9/site-packages/nesy_factory/GANs",
+                "/usr/lib/python3.9/site-packages/nesy_factory/GANs",
+                # Python 3.8 paths
+                "/usr/local/lib/python3.8/site-packages/nesy_factory/GANs",
+                "/usr/lib/python3.8/site-packages/nesy_factory/GANs",
+                # Conda paths
+                "/opt/conda/lib/python3.10/site-packages/nesy_factory/GANs",
+                "/opt/conda/lib/python3.9/site-packages/nesy_factory/GANs",
+                # Common alternative paths
+                "/app/nesy_factory/GANs",
+                "/nesy_factory/GANs",
+                "./nesy_factory/GANs"
+            ]
+            
+            for path in search_paths:
+                if os.path.exists(path):
+                    print(f"Found nesy_factory at: {os.path.dirname(path)}")
+                    return os.path.dirname(path)
+            
+            # Try to find via sys.path
+            for path in sys.path:
+                test_path = os.path.join(path, 'nesy_factory', 'GANs')
+                if os.path.exists(test_path):
+                    print(f"Found nesy_factory via sys.path: {os.path.dirname(test_path)}")
+                    return os.path.dirname(test_path)
+            
+            return None
+        
         try:
+            # Find nesy_factory path
+            nesy_base_path = find_nesy_factory_path()
+            if nesy_base_path is None:
+                print("✗ nesy_factory not found in any standard location")
+                sys.exit(1)
+            
             if model_type == 'dcgan':
                 print("Loading DCGAN...")
                 
-                dcgan_path = "/usr/local/lib/python3.10/site-packages/nesy_factory/GANs/dcgan.py"
+                dcgan_path = os.path.join(nesy_base_path, 'GANs', 'dcgan.py')
+                print(f"Looking for DCGAN at: {dcgan_path}")
+                
+                if not os.path.exists(dcgan_path):
+                    print(f"✗ DCGAN file not found at: {dcgan_path}")
+                    sys.exit(1)
                 
                 with open(dcgan_path, 'r') as f:
                     dcgan_code = f.read()
@@ -239,6 +285,7 @@ implementation:
                 print(f"  Generator layers: {generator_layers}")
                 print(f"  Discriminator layers: {discriminator_layers}")
                 
+                # Use config values instead of hardcoded defaults
                 dcgan_config_dict = {
                     'image_size': image_size,
                     'channels': channels,
@@ -250,17 +297,27 @@ implementation:
                     'learning_rate': model_config.get('learning_rate', 0.0002),
                     'epochs': training_config.get('epochs', 50),
                     'device': 'cuda' if torch.cuda.is_available() else 'cpu',
-                    'generator_features': 64,
-                    'discriminator_features': 64,
-                    'generator_activation': 'relu',
-                    'generator_output_activation': 'tanh',
-                    'generator_norm': 'batch_norm',
-                    'discriminator_activation': 'leaky_relu',
-                    'discriminator_output_activation': 'sigmoid',
-                    'discriminator_norm': 'batch_norm',
-                    'optimizer_type': 'adam',
-                    'beta1': 0.5,
-                    'beta2': 0.999,
+                    # Get these from config instead of hardcoding
+                    'generator_features': model_config.get('generator_features', 64),
+                    'discriminator_features': model_config.get('discriminator_features', 64),
+                    'generator_activation': model_config.get('generator_activation', 'relu'),
+                    'generator_output_activation': model_config.get('generator_output_activation', 'tanh'),
+                    'generator_norm': model_config.get('generator_norm', 'batch_norm'),
+                    'discriminator_activation': model_config.get('discriminator_activation', 'leaky_relu'),
+                    'discriminator_output_activation': model_config.get('discriminator_output_activation', 'sigmoid'),
+                    'discriminator_norm': model_config.get('discriminator_norm', 'batch_norm'),
+                    'optimizer_type': model_config.get('optimizer_type', 'adam'),
+                    'beta1': model_config.get('beta1', 0.5),
+                    'beta2': model_config.get('beta2', 0.999),
+                    # Add support for separate learning rates
+                    'generator_lr': model_config.get('generator_lr', model_config.get('learning_rate', 0.0002)),
+                    'discriminator_lr': model_config.get('discriminator_lr', model_config.get('learning_rate', 0.0002)),
+                    # Add WGAN-GP support
+                    'use_wgan': model_config.get('use_wgan', False),
+                    'use_gradient_penalty': model_config.get('use_gradient_penalty', False),
+                    'lambda_gp': model_config.get('lambda_gp', 10.0),
+                    'n_critic': model_config.get('n_critic', 5),
+                    'label_smoothing': model_config.get('label_smoothing', 0.0),
                 }
                 
                 try:
@@ -324,7 +381,12 @@ implementation:
             elif model_type == 'vanilla_gan':
                 print("\\nLoading VanillaGAN...")
                 
-                vanilla_path = "/usr/local/lib/python3.10/site-packages/nesy_factory/GANs/vanilla_gan.py"
+                vanilla_path = os.path.join(nesy_base_path, 'GANs', 'vanilla_gan.py')
+                print(f"Looking for VanillaGAN at: {vanilla_path}")
+                
+                if not os.path.exists(vanilla_path):
+                    print(f"✗ VanillaGAN file not found at: {vanilla_path}")
+                    sys.exit(1)
                 
                 with open(vanilla_path, 'r') as f:
                     vanilla_code = f.read()
@@ -349,6 +411,9 @@ implementation:
                     'lr': model_config.get('learning_rate', 0.0002),
                     'epochs': training_config.get('epochs', 50),
                     'device': 'cuda' if torch.cuda.is_available() else 'cpu',
+                    # Add support for separate learning rates
+                    'generator_lr': model_config.get('generator_lr', model_config.get('learning_rate', 0.0002)),
+                    'discriminator_lr': model_config.get('discriminator_lr', model_config.get('learning_rate', 0.0002)),
                 }
                 
                 try:
@@ -452,7 +517,11 @@ implementation:
         print("SAVING OUTPUTS")
         print("="*80)
         
-        os.makedirs(os.path.dirname(args.model_out) or '.', exist_ok=True)
+        # Create output directory if it doesn't exist
+        output_dir = os.path.dirname(args.model_out)
+        if output_dir and not os.path.exists(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
+            print(f"Created output directory: {output_dir}")
         
         model_state = {
             'model_type': model_type,
@@ -476,12 +545,18 @@ implementation:
         updated_config_json = json.dumps(gan_config, indent=2)
         updated_config_base64 = base64.b64encode(updated_config_json.encode('utf-8')).decode('utf-8')
         
-        os.makedirs(os.path.dirname(args.gan_config_base64_updated) or '.', exist_ok=True)
+        config_output_dir = os.path.dirname(args.gan_config_base64_updated)
+        if config_output_dir and not os.path.exists(config_output_dir):
+            os.makedirs(config_output_dir, exist_ok=True)
+        
         with open(args.gan_config_base64_updated, 'w') as f:
             f.write(updated_config_base64)
         print(f"✓ Updated config saved to: {args.gan_config_base64_updated}")
         
-        os.makedirs(os.path.dirname(args.model_info) or '.', exist_ok=True)
+        info_output_dir = os.path.dirname(args.model_info)
+        if info_output_dir and not os.path.exists(info_output_dir):
+            os.makedirs(info_output_dir, exist_ok=True)
+        
         with open(args.model_info, 'w') as f:
             json.dump(model_info_data, f, indent=2)
         print(f"✓ Model info saved to: {args.model_info}")
