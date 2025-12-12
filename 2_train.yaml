@@ -1,4 +1,4 @@
-name: gpu Train GAN (Backprop/CAFO/Forward-Forward)
+name: Train (Backprop/CAFO/Forward-Forward)
 description: Trains GAN models (DCGAN/Vanilla GAN) with support for Backprop, CAFO, and Forward-Forward algorithms
 inputs:
   - name: initialized_model
