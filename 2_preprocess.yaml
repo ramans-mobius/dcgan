@@ -1,4 +1,4 @@
-name: gpu Preprocess
+name: Preprocess
 description: Preprocesses dataset for GAN and updates master config
 inputs:
   - name: train_data
